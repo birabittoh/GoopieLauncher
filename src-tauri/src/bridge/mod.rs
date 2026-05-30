@@ -19,7 +19,7 @@ use std::sync::{
     Arc, Mutex,
 };
 
-use crate::{config, games, iso, platform, saves, vehicles};
+use crate::{config, download, games, iso, launcher, platform, saves, vehicles};
 
 // ── Shared application state ─────────────────────────────────────────────────
 
@@ -168,7 +168,31 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
         // ── Platform ──────────────────────────────────────────────────────────
         "GetPlatform"  => json!(platform::get_platform()),
         "GetArch"      => json!(platform::get_arch()),
-        "getVersion"   => json!(10_i32),
+        "getVersion"   => json!(env!("CARGO_PKG_VERSION")),
+
+        "CheckForLauncherUpdate" => {
+            let api_url = env!("GOOPIE_RELEASES_API");
+            match download::fetch_to_string(api_url) {
+                Ok(body) => {
+                    let remote_tag = games::json_extract_str(&body, "tag_name");
+                    let current = env!("CARGO_PKG_VERSION");
+                    let remote_clean = remote_tag.trim_start_matches('v');
+                    let has_update = !remote_clean.is_empty() && remote_clean != current;
+                    json!({
+                        "hasUpdate": has_update,
+                        "latestVersion": remote_tag,
+                        "current": current,
+                    })
+                }
+                Err(_) => Value::Null,
+            }
+        }
+
+        "SelfUpdateLauncher" => {
+            let state_clone = Arc::clone(state);
+            std::thread::spawn(move || launcher::self_update(state_clone));
+            Value::Null
+        }
 
         // ── Config / paths ────────────────────────────────────────────────────
         "GetGamesPath" => json!(config::get_games_folder()),

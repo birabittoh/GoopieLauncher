@@ -1,5 +1,6 @@
 mod auth;
 mod bridge;
+mod launcher;
 mod config;
 mod archive;
 mod download;

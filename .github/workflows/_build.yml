@@ -66,6 +66,7 @@ jobs:
           VERSION: ${{ inputs.version }}
           GOOPIE_OAUTH_CLIENT_ID: ${{ secrets.GOOPIE_OAUTH_CLIENT_ID }}
           GOOPIE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOPIE_OAUTH_CLIENT_SECRET }}
+          GOOPIE_RELEASES_API: ${{ vars.GOOPIE_RELEASES_API }}
 
       - name: Build (Windows)
         if: inputs.platform == 'windows'
@@ -74,6 +75,29 @@ jobs:
           VERSION: ${{ inputs.version }}
           GOOPIE_OAUTH_CLIENT_ID: ${{ secrets.GOOPIE_OAUTH_CLIENT_ID }}
           GOOPIE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOPIE_OAUTH_CLIENT_SECRET }}
+          GOOPIE_RELEASES_API: ${{ vars.GOOPIE_RELEASES_API }}
+
+      # ── Stage artifacts with consistent hyphenated names ───────────────────
+      - name: Stage artifacts (Linux)
+        if: inputs.platform == 'linux'
+        run: |
+          mkdir -p staged
+          BASE="Goopie-Launcher-${{ inputs.version }}-linux-${{ inputs.arch }}"
+          cp src-tauri/target/release/bundle/deb/*.deb       "staged/${BASE}.deb"
+          cp src-tauri/target/release/bundle/appimage/*.AppImage "staged/${BASE}.AppImage"
+
+      - name: Stage artifacts (Windows)
+        if: inputs.platform == 'windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path staged | Out-Null
+          $base = "Goopie-Launcher-${{ inputs.version }}-windows-${{ inputs.arch }}"
+          $exe  = Get-ChildItem src-tauri/target/release/*.exe | Select-Object -First 1
+          $msi  = Get-ChildItem src-tauri/target/release/bundle/msi/*.msi | Select-Object -First 1
+          $nsis = Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe | Select-Object -First 1
+          Copy-Item $exe.FullName  "staged/$base.exe"
+          Copy-Item $msi.FullName  "staged/$base.msi"
+          Copy-Item $nsis.FullName "staged/$base-setup.exe"
 
       # ── Artifact upload (one artifact per bundle type) ─────────────────────
       - name: Upload .deb
@@ -81,40 +105,32 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Goopie-Launcher-${{ inputs.version }}-linux-${{ inputs.arch }}-deb
-          path: src-tauri/target/release/bundle/deb/*.deb
+          path: staged/*.deb
 
       - name: Upload .AppImage
         if: inputs.platform == 'linux'
         uses: actions/upload-artifact@v4
         with:
           name: Goopie-Launcher-${{ inputs.version }}-linux-${{ inputs.arch }}-appimage
-          path: src-tauri/target/release/bundle/appimage/*.AppImage
+          path: staged/*.AppImage
 
       - name: Upload .msi
         if: inputs.platform == 'windows'
         uses: actions/upload-artifact@v4
         with:
           name: Goopie-Launcher-${{ inputs.version }}-windows-${{ inputs.arch }}-msi
-          path: src-tauri/target/release/bundle/msi/*.msi
+          path: staged/*.msi
 
       - name: Upload .exe (NSIS)
         if: inputs.platform == 'windows'
         uses: actions/upload-artifact@v4
         with:
           name: Goopie-Launcher-${{ inputs.version }}-windows-${{ inputs.arch }}-nsis
-          path: src-tauri/target/release/bundle/nsis/*.exe
-
-      - name: Stage portable .exe (Windows)
-        if: inputs.platform == 'windows'
-        shell: pwsh
-        run: |
-          $exe = Get-ChildItem src-tauri/target/release/*.exe | Select-Object -First 1
-          New-Item -ItemType Directory -Force -Path portable | Out-Null
-          Copy-Item $exe.FullName "portable/Goopie-Launcher-${{ inputs.version }}-windows-${{ inputs.arch }}.exe"
+          path: staged/*-setup.exe
 
       - name: Upload portable .exe
         if: inputs.platform == 'windows'
         uses: actions/upload-artifact@v4
         with:
           name: Goopie-Launcher-${{ inputs.version }}-windows-${{ inputs.arch }}-portable
-          path: portable/*.exe
+          path: staged/Goopie-Launcher-${{ inputs.version }}-windows-${{ inputs.arch }}.exe
