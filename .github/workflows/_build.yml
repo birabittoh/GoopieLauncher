@@ -53,6 +53,10 @@ jobs:
             libssl-dev \
             pkg-config
 
+      # ── Tauri CLI ──────────────────────────────────────────────────────────
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version '^2' --locked
+
       # ── Tauri build ────────────────────────────────────────────────────────
       - name: Build (Linux)
         if: inputs.platform == 'linux'
