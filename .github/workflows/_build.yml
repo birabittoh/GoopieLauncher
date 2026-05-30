@@ -103,3 +103,18 @@ jobs:
         with:
           name: Goopie-Launcher-${{ inputs.version }}-windows-${{ inputs.arch }}-nsis
           path: src-tauri/target/release/bundle/nsis/*.exe
+
+      - name: Stage portable .exe (Windows)
+        if: inputs.platform == 'windows'
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem src-tauri/target/release/*.exe | Select-Object -First 1
+          New-Item -ItemType Directory -Force -Path portable | Out-Null
+          Copy-Item $exe.FullName "portable/Goopie-Launcher-${{ inputs.version }}-windows-${{ inputs.arch }}.exe"
+
+      - name: Upload portable .exe
+        if: inputs.platform == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Goopie-Launcher-${{ inputs.version }}-windows-${{ inputs.arch }}-portable
+          path: portable/*.exe
