@@ -1,4 +1,4 @@
-//! Archive extraction: zip and tar.gz, fully in-process (no shell-outs).
+//! Archive extraction: zip, tar.gz, and 7z, fully in-process (no shell-outs).
 
 use std::io;
 use std::path::Path;
@@ -56,6 +56,13 @@ pub fn extract_tar_gz(archive_path: &str, dest_dir: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// Extract a `.7z` file to `dest_dir`.
+pub fn extract_7z(archive_path: &str, dest_dir: &str) -> io::Result<()> {
+    std::fs::create_dir_all(dest_dir)?;
+    sevenz_rust::decompress_file(archive_path, dest_dir)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+}
+
 /// Dispatch to the correct extractor based on file extension.
 pub fn extract_archive(archive_path: &str, dest_dir: &str) -> io::Result<()> {
     let lower = archive_path.to_lowercase();
@@ -63,6 +70,8 @@ pub fn extract_archive(archive_path: &str, dest_dir: &str) -> io::Result<()> {
         extract_zip(archive_path, dest_dir)
     } else if lower.ends_with(".tar.gz") || lower.ends_with(".tgz") {
         extract_tar_gz(archive_path, dest_dir)
+    } else if lower.ends_with(".7z") {
+        extract_7z(archive_path, dest_dir)
     } else {
         Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -80,8 +89,12 @@ pub fn is_tar_gz(name: &str) -> bool {
     l.ends_with(".tar.gz") || l.ends_with(".tgz")
 }
 
+pub fn is_7z(name: &str) -> bool {
+    name.to_lowercase().ends_with(".7z")
+}
+
 pub fn is_archive(name: &str) -> bool {
-    is_zip(name) || is_tar_gz(name)
+    is_zip(name) || is_tar_gz(name) || is_7z(name)
 }
 
 /// Detect if the first two bytes of a file are the gzip magic number `\x1f\x8b`.

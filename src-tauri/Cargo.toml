@@ -22,10 +22,11 @@ reqwest       = { version = "0.12", default-features = false, features = ["block
 sha2          = "0.10"
 hex           = "0.4"
 
-# Archive extraction (zip + tar.gz)
+# Archive extraction (zip + tar.gz + 7z)
 zip           = "2"
 tar           = "0.4"
 flate2        = "1"
+sevenz-rust   = "0.6"
 
 # Native dialogs (ISO file picker, folder picker)
 rfd           = "0.15"
