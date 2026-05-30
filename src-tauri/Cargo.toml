@@ -1,0 +1,48 @@
+[package]
+name = "goopie-launcher"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri         = { version = "2", features = [] }
+serde         = { version = "1", features = ["derive"] }
+serde_json    = "1"
+
+# Networking
+reqwest       = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "stream"] }
+
+# Hashing
+sha2          = "0.10"
+hex           = "0.4"
+
+# Archive extraction (zip + tar.gz)
+zip           = "2"
+tar           = "0.4"
+flate2        = "1"
+
+# Native dialogs (ISO file picker, folder picker)
+rfd           = "0.15"
+
+# Open URLs / folders in the system default application
+open          = "5"
+
+# Platform dirs (config, data, documents)
+directories   = "5"
+
+# Loopback HTTP bridge server (tiny, blocking, no async needed)
+tiny_http     = "0.12"
+
+# ISO / XDVD filesystem extraction (pure-Rust, no sidecar needed)
+# Use "sync" feature so all async fns become blocking calls — no tokio required.
+xdvdfs        = { version = "0.8", default-features = false, features = ["std", "read", "sync"] }
+
+# Windows registry (config storage on Windows)
+[target.'cfg(windows)'.dependencies]
+winreg        = "0.52"

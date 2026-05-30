@@ -1,0 +1,21 @@
+# Rust/Cargo
+src-tauri/target/
+src-tauri/gen/
+
+# Node
+node_modules/
+dist/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Tauri build artefacts
+*.msi
+*.deb
+*.AppImage
+*.dmg

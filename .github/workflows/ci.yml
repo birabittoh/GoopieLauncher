@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      sha-short: ${{ steps.sha.outputs.short }}
+      is-release: ${{ steps.tagcheck.outputs.is-release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - id: sha
+        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - id: tagcheck
+        run: |
+          if git tag --points-at HEAD | grep -q '^v'; then
+            echo "is-release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is-release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-linux:
+    needs: prepare
+    if: needs.prepare.outputs.is-release != 'true'
+    name: Build linux/x86_64
+    uses: ./.github/workflows/_build.yml
+    with:
+      version: ${{ needs.prepare.outputs.sha-short }}
+      platform: linux
+      arch: x86_64
+
+  build-windows:
+    needs: prepare
+    if: needs.prepare.outputs.is-release != 'true'
+    name: Build windows/x86_64
+    uses: ./.github/workflows/_build.yml
+    with:
+      version: ${{ needs.prepare.outputs.sha-short }}
+      platform: windows
+      arch: x86_64
