@@ -23,6 +23,18 @@ use crate::{config, games, iso, platform, saves, vehicles};
 
 // ── Shared application state ─────────────────────────────────────────────────
 
+/// Result of a native Google OAuth sign-in attempt.
+pub enum GoogleSignInResult {
+    /// No sign-in has been started this session.
+    Idle,
+    /// Sign-in is in progress (system browser is open).
+    Pending,
+    /// Sign-in succeeded; holds the Google access_token.
+    Ok(String),
+    /// Sign-in failed or was cancelled; holds an error message.
+    Err(String),
+}
+
 pub struct AppState {
     /// Download progress: -1 = idle, 0-100 = percent.
     pub download_progress: AtomicI32,
@@ -32,6 +44,8 @@ pub struct AppState {
     pub is_extracting: AtomicBool,
     /// Cached vehicle list (for Nuts & Bolts save browser).
     pub vehicles: Mutex<Vec<serde_json::Value>>,
+    /// State of the native Google OAuth loopback flow.
+    pub google_signin: Mutex<GoogleSignInResult>,
 }
 
 impl AppState {
@@ -42,6 +56,7 @@ impl AppState {
             download_string: Mutex::new(String::new()),
             is_extracting: AtomicBool::new(false),
             vehicles: Mutex::new(Vec::new()),
+            google_signin: Mutex::new(GoogleSignInResult::Idle),
         }
     }
 
@@ -305,6 +320,33 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
 
         // ── Misc ──────────────────────────────────────────────────────────────
         "testFunction" => json!("yes"),
+
+        // ── Google OAuth (system-browser loopback + PKCE) ─────────────────────
+        // Fire-and-forget: resets state to Pending and spawns the OAuth thread.
+        // The website polls `getGoogleSignInResult` until status is "ok"/"error".
+        "GoogleSignIn" => {
+            *state.google_signin.lock().unwrap() = GoogleSignInResult::Pending;
+            let state_clone = Arc::clone(state);
+            std::thread::spawn(move || {
+                let result = crate::auth::google_sign_in();
+                let mut lock = state_clone.google_signin.lock().unwrap();
+                *lock = match result {
+                    Ok(token) => GoogleSignInResult::Ok(token),
+                    Err(msg) => GoogleSignInResult::Err(msg),
+                };
+            });
+            Value::Null
+        }
+        // Poll endpoint: returns { status, accessToken?, message? }.
+        "getGoogleSignInResult" => {
+            let lock = state.google_signin.lock().unwrap();
+            match &*lock {
+                GoogleSignInResult::Idle    => json!({ "status": "idle" }),
+                GoogleSignInResult::Pending => json!({ "status": "pending" }),
+                GoogleSignInResult::Ok(t)   => json!({ "status": "ok", "accessToken": t }),
+                GoogleSignInResult::Err(m)  => json!({ "status": "error", "message": m }),
+            }
+        }
 
         _ => {
             eprintln!("[GoopieLauncher] unknown bridge function: {}", name);

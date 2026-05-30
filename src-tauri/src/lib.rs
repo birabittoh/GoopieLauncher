@@ -1,3 +1,4 @@
+mod auth;
 mod bridge;
 mod config;
 mod archive;

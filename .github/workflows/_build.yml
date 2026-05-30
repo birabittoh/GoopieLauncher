@@ -15,6 +15,13 @@ on:
         description: "Target architecture: x86_64 or aarch64"
         type: string
         required: true
+    secrets:
+      GOOPIE_OAUTH_CLIENT_ID:
+        description: "Google Desktop OAuth 2.0 client ID (public; baked into the binary at build time)"
+        required: true
+      GOOPIE_OAUTH_CLIENT_SECRET:
+        description: "Google Desktop OAuth 2.0 client secret (public for Desktop apps; baked into the binary)"
+        required: true
 
 jobs:
   build:
@@ -57,12 +64,16 @@ jobs:
         run: cargo tauri build --bundles deb,appimage
         env:
           VERSION: ${{ inputs.version }}
+          GOOPIE_OAUTH_CLIENT_ID: ${{ secrets.GOOPIE_OAUTH_CLIENT_ID }}
+          GOOPIE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOPIE_OAUTH_CLIENT_SECRET }}
 
       - name: Build (Windows)
         if: inputs.platform == 'windows'
         run: cargo tauri build --bundles nsis,msi
         env:
           VERSION: ${{ inputs.version }}
+          GOOPIE_OAUTH_CLIENT_ID: ${{ secrets.GOOPIE_OAUTH_CLIENT_ID }}
+          GOOPIE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOPIE_OAUTH_CLIENT_SECRET }}
 
       # ── Artifact upload (one artifact per bundle type) ─────────────────────
       - name: Upload .deb

@@ -31,6 +31,7 @@ jobs:
     if: needs.prepare.outputs.is-release != 'true'
     name: Build linux/x86_64
     uses: ./.github/workflows/_build.yml
+    secrets: inherit
     with:
       version: ${{ needs.prepare.outputs.sha-short }}
       platform: linux
@@ -41,6 +42,7 @@ jobs:
     if: needs.prepare.outputs.is-release != 'true'
     name: Build windows/x86_64
     uses: ./.github/workflows/_build.yml
+    secrets: inherit
     with:
       version: ${{ needs.prepare.outputs.sha-short }}
       platform: windows

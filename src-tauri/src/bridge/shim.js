@@ -88,6 +88,13 @@
   window.getVehicle       = function (i)      { return call('getVehicle', [i]); };
   window.reloadVehicles   = function ()       { return call('reloadVehicles', []); };
 
+  // ── Google OAuth (system-browser loopback) ───────────────────────────────────
+  // `GoogleSignIn` opens the system browser and starts the PKCE flow (fire-and-forget).
+  // Poll `getGoogleSignInResult` every ~500 ms until status is "ok" or "error".
+  // On "ok", use GoogleAuthProvider.credential(null, result.accessToken) + signInWithCredential.
+  window.GoogleSignIn          = function ()  { return call('GoogleSignIn', []); };
+  window.getGoogleSignInResult = function ()  { return call('getGoogleSignInResult', []); };
+
   // ── Misc ─────────────────────────────────────────────────────────────────────
   window.testFunction     = function (s)      { return call('testFunction', [s]); };
 

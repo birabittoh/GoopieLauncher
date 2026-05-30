@@ -1,6 +1,7 @@
 # Rust/Cargo
 src-tauri/target/
 src-tauri/gen/
+.cargo/
 
 # Node
 node_modules/
