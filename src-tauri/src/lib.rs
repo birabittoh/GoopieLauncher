@@ -40,16 +40,25 @@ fn resolve_url() -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Start the synchronous bridge server before building Tauri so we can
-    // embed the port/token into the initialization script.
+    // Generate a random per-launch token and build the JS init-script before
+    // Tauri starts. The custom URI scheme is registered on the Builder so wry
+    // marks it as a secure context before the first navigation — preventing any
+    // mixed-content block from the HTTPS page.
     let state = Arc::new(AppState::new());
-    let (port, token) = bridge::start_server(Arc::clone(&state));
-
+    let token = bridge::make_token();
+    let init_script = bridge::make_init_script(&token);
     let url_str = resolve_url();
-    let init_script = bridge::make_init_script(port, &token);
+
+    // Clone what the scheme handler closure needs to own.
+    let state_for_scheme = Arc::clone(&state);
+    let token_for_scheme = token.clone();
 
     tauri::Builder::default()
         .manage(state)
+        // Register the bridge before .setup() so wry marks it as secure.
+        .register_uri_scheme_protocol("goopiebridge", move |_ctx, request| {
+            bridge::handle_bridge_request(&state_for_scheme, request, &token_for_scheme)
+        })
         .setup(move |app| {
             let url = WebviewUrl::External(url_str.parse().expect("invalid launcher URL"));
 
@@ -63,7 +72,7 @@ pub fn run() {
 
             Ok(())
         })
-        // No tauri::command handlers — all native calls go through the bridge server.
+        // No tauri::command handlers — all native calls go through the bridge scheme.
         .invoke_handler(tauri::generate_handler![])
         .run(tauri::generate_context!())
         .expect("error while running Goopie Launcher");

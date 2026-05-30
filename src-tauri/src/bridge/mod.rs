@@ -1,21 +1,23 @@
-//! Synchronous loopback HTTP bridge server.
+//! Synchronous native bridge — custom URI scheme transport.
 //!
 //! The website at goopie.xyz calls native functions synchronously via `window.Foo()`.
-//! Because Tauri's `invoke()` is async (Promise-based), and we cannot modify the website,
-//! we instead:
-//!   1. Bind a tiny HTTP server to `127.0.0.1:<ephemeral port>` at startup.
-//!   2. Inject a JS init-script that defines every `window.*` global as a synchronous
-//!      XMLHttpRequest to `http://127.0.0.1:<port>/bridge/<fn>?token=<secret>&args=<json>`.
-//!   3. The server dispatches each function name to Rust and returns a JSON body.
+//! Because Tauri's `invoke()` is async and the page is served over HTTPS (which would
+//! block synchronous XHR to plain `http://127.0.0.1` as mixed content under WebKitGTK),
+//! we instead register a **Tauri custom URI scheme** (`goopiebridge`).
 //!
-//! A random per-launch token prevents other local processes from calling the bridge.
+//! wry marks custom schemes as secure contexts, so requests from the HTTPS page are
+//! never treated as mixed content on any webview backend.
+//!
+//! Architecture:
+//!   1. Generate a random per-launch secret token.
+//!   2. Inject a JS init-script that defines every `window.*` global as a synchronous
+//!      XMLHttpRequest to `goopiebridge://localhost/bridge/<fn>?token=<secret>&args=<json>`.
+//!   3. `handle_bridge_request` dispatches each function name to Rust and returns JSON.
 
 use std::sync::{
     atomic::{AtomicBool, AtomicI32, Ordering},
     Arc, Mutex,
 };
-
-use tiny_http::{Header, Response, Server};
 
 use crate::{config, games, iso, platform, saves, vehicles};
 
@@ -58,90 +60,81 @@ impl AppState {
     }
 }
 
-// ── Server startup ────────────────────────────────────────────────────────────
+// ── Token + init-script generation ───────────────────────────────────────────
 
-/// Start the bridge server on a random loopback port.
-/// Returns `(port, token)` so the init-script can be generated.
-pub fn start_server(state: Arc<AppState>) -> (u16, String) {
-    let server = Server::http("127.0.0.1:0").expect("failed to bind bridge server");
-    let port = server
-        .server_addr()
-        .to_ip()
-        .expect("not a TCP addr")
-        .port();
-
-    // Random 32-char hex token
-    let token: String = {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let mut h = DefaultHasher::new();
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .subsec_nanos()
-            .hash(&mut h);
-        std::process::id().hash(&mut h);
-        format!("{:016x}{:016x}", h.finish(), h.finish().wrapping_mul(0x9e37_79b9_7f4a_7c15))
-    };
-
-    let token_clone = token.clone();
-    std::thread::Builder::new()
-        .name("bridge-server".into())
-        .spawn(move || run_server(server, token_clone, state))
-        .expect("failed to spawn bridge server thread");
-
-    (port, token)
+/// Generate a random per-launch secret token.
+pub fn make_token() -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let mut h = DefaultHasher::new();
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .subsec_nanos()
+        .hash(&mut h);
+    std::process::id().hash(&mut h);
+    format!("{:016x}{:016x}", h.finish(), h.finish().wrapping_mul(0x9e37_79b9_7f4a_7c15))
 }
 
-/// Build the initialization script by substituting port/token into the shim template.
-pub fn make_init_script(port: u16, token: &str) -> String {
+/// Build the initialization script by substituting the bridge base URL and token
+/// into the shim template.
+///
+/// Custom-scheme URL form differs by webview backend:
+/// - WebView2 (Windows): `http://goopiebridge.localhost/bridge/` (secure loopback proxy)
+/// - WebKitGTK / WKWebView (Linux/macOS): `goopiebridge://localhost/bridge/`
+pub fn make_init_script(token: &str) -> String {
+    let base = if cfg!(windows) {
+        "http://goopiebridge.localhost/bridge/"
+    } else {
+        "goopiebridge://localhost/bridge/"
+    };
     let shim = include_str!("shim.js");
-    shim.replace("__BRIDGE_PORT__", &port.to_string())
+    shim.replace("__BRIDGE_BASE__", base)
         .replace("__BRIDGE_TOKEN__", token)
 }
 
-// ── Server loop ───────────────────────────────────────────────────────────────
+// ── Custom URI scheme request handler ────────────────────────────────────────
 
-fn run_server(server: Server, token: String, state: Arc<AppState>) {
-    for request in server.incoming_requests() {
-        let url = request.url().to_string();
+/// Handle one bridge request arriving via the `goopiebridge` custom URI scheme.
+///
+/// Expected request URI:
+///   `goopiebridge://localhost/bridge/<Fn>?token=<secret>&args=<json>`  (Linux/macOS)
+///   `http://goopiebridge.localhost/bridge/<Fn>?token=<secret>&args=<json>` (Windows)
+pub fn handle_bridge_request(
+    state: &Arc<AppState>,
+    request: tauri::http::Request<Vec<u8>>,
+    token: &str,
+) -> tauri::http::Response<Vec<u8>> {
+    let uri = request.uri();
 
-        // Parse path and query from the URL.
-        let (path, query) = match url.find('?') {
-            Some(pos) => (&url[..pos], &url[pos + 1..]),
-            None => (url.as_str(), ""),
-        };
+    // Only handle /bridge/<fn>
+    let fn_name = match uri.path().strip_prefix("/bridge/") {
+        Some(rest) => percent_decode(rest),
+        None => return resp(404, "null"),
+    };
 
-        // Only handle /bridge/<fn>
-        let fn_name = if let Some(rest) = path.strip_prefix("/bridge/") {
-            percent_decode(rest)
-        } else {
-            let _ = request.respond(Response::from_string("not found").with_status_code(404));
-            continue;
-        };
-
-        // Parse query params
-        let params = parse_query(query);
-        let req_token = params.get("token").map(|s| s.as_str()).unwrap_or("");
-        if req_token != token {
-            let _ = request.respond(Response::from_string("forbidden").with_status_code(403));
-            continue;
-        }
-
-        let args_str = params.get("args").cloned().unwrap_or_else(|| "[]".into());
-        let args: Vec<serde_json::Value> = serde_json::from_str(&args_str).unwrap_or_default();
-
-        let result = dispatch(&fn_name, args, &state);
-        let body = serde_json::to_string(&result).unwrap_or_else(|_| "null".into());
-
-        let cors = Header::from_bytes("Access-Control-Allow-Origin", "*").unwrap();
-        let ct = Header::from_bytes("Content-Type", "application/json").unwrap();
-        let resp = Response::from_string(body)
-            .with_header(cors)
-            .with_header(ct);
-        let _ = request.respond(resp);
+    // Validate token
+    let params = parse_query(uri.query().unwrap_or(""));
+    if params.get("token").map(|s| s.as_str()).unwrap_or("") != token {
+        return resp(403, "null");
     }
+
+    let args_str = params.get("args").cloned().unwrap_or_else(|| "[]".into());
+    let args: Vec<serde_json::Value> = serde_json::from_str(&args_str).unwrap_or_default();
+
+    let result = dispatch(&fn_name, args, state);
+    let body = serde_json::to_string(&result).unwrap_or_else(|_| "null".into());
+    resp(200, &body)
+}
+
+fn resp(code: u16, body: &str) -> tauri::http::Response<Vec<u8>> {
+    tauri::http::Response::builder()
+        .status(code)
+        .header("Content-Type", "application/json")
+        .header("Access-Control-Allow-Origin", "*")
+        .body(body.as_bytes().to_vec())
+        .unwrap()
 }
 
 // ── Dispatch table ────────────────────────────────────────────────────────────
@@ -166,7 +159,7 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
         "GetGamesPath" => json!(config::get_games_folder()),
         "SetGamesPath" => {
             // Opens a native folder dialog synchronously (blocking call is fine in the
-            // bridge thread).
+            // scheme handler thread).
             if let Some(path) = platform::pick_folder("Select Games Folder") {
                 config::set_games_path(&path);
             }

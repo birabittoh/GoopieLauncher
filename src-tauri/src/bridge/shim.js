@@ -1,10 +1,15 @@
 // Goopie Launcher – synchronous native bridge shim
 // Injected as an initialization_script before any page JavaScript runs.
-// __BRIDGE_PORT__ and __BRIDGE_TOKEN__ are substituted at runtime.
+// __BRIDGE_BASE__ and __BRIDGE_TOKEN__ are substituted at runtime by make_init_script().
 (function () {
   'use strict';
 
-  var BASE = 'http://127.0.0.1:__BRIDGE_PORT__/bridge/';
+  // __BRIDGE_BASE__ is substituted at runtime by make_init_script():
+  //   Linux/macOS: goopiebridge://localhost/bridge/
+  //   Windows:     http://goopiebridge.localhost/bridge/
+  // Using a custom URI scheme (registered as secure by wry) avoids mixed-content
+  // blocking when the page is served over HTTPS.
+  var BASE = '__BRIDGE_BASE__';
   var TOKEN = '__BRIDGE_TOKEN__';
 
   /**
@@ -86,5 +91,5 @@
   // ── Misc ─────────────────────────────────────────────────────────────────────
   window.testFunction     = function (s)      { return call('testFunction', [s]); };
 
-  console.log('[GoopieLauncher] bridge shim loaded, port __BRIDGE_PORT__');
+  console.log('[GoopieLauncher] bridge shim loaded (goopiebridge custom scheme)');
 })();
