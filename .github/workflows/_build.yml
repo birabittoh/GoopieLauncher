@@ -15,16 +15,10 @@ on:
         description: "Target architecture: x86_64 or aarch64"
         type: string
         required: true
-    outputs:
-      artifact-name:
-        description: "Name of the uploaded artifact"
-        value: ${{ jobs.build.outputs.artifact-name }}
 
 jobs:
   build:
     runs-on: ${{ inputs.platform == 'linux' && 'ubuntu-22.04' || 'windows-latest' }}
-    outputs:
-      artifact-name: ${{ steps.artifact-name.outputs.name }}
 
     steps:
       - name: Checkout
@@ -70,27 +64,31 @@ jobs:
         env:
           VERSION: ${{ inputs.version }}
 
-      # ── Artifact naming and upload ─────────────────────────────────────────
-      - name: Set artifact name
-        id: artifact-name
-        shell: bash
-        run: |
-          echo "name=Goopie-Launcher-${{ inputs.version }}-${{ inputs.platform }}-${{ inputs.arch }}" >> "$GITHUB_OUTPUT"
-
-      - name: Upload artifact (Linux)
+      # ── Artifact upload (one artifact per bundle type) ─────────────────────
+      - name: Upload .deb
         if: inputs.platform == 'linux'
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.artifact-name.outputs.name }}
-          path: |
-            src-tauri/target/release/bundle/deb/*.deb
-            src-tauri/target/release/bundle/appimage/*.AppImage
+          name: Goopie-Launcher-${{ inputs.version }}-linux-${{ inputs.arch }}-deb
+          path: src-tauri/target/release/bundle/deb/*.deb
 
-      - name: Upload artifact (Windows)
+      - name: Upload .AppImage
+        if: inputs.platform == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Goopie-Launcher-${{ inputs.version }}-linux-${{ inputs.arch }}-appimage
+          path: src-tauri/target/release/bundle/appimage/*.AppImage
+
+      - name: Upload .msi
         if: inputs.platform == 'windows'
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.artifact-name.outputs.name }}
-          path: |
-            src-tauri/target/release/bundle/nsis/*.exe
-            src-tauri/target/release/bundle/msi/*.msi
+          name: Goopie-Launcher-${{ inputs.version }}-windows-${{ inputs.arch }}-msi
+          path: src-tauri/target/release/bundle/msi/*.msi
+
+      - name: Upload .exe (NSIS)
+        if: inputs.platform == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Goopie-Launcher-${{ inputs.version }}-windows-${{ inputs.arch }}-nsis
+          path: src-tauri/target/release/bundle/nsis/*.exe
