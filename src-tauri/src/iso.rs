@@ -71,15 +71,20 @@ pub fn install_iso(game_name: &str, state: Arc<AppState>) {
 // ── xdvdfs extraction (synchronous) ──────────────────────────────────────────
 
 fn extract_xdvd(iso_path: &str, dest: &Path) -> std::io::Result<usize> {
-    let mut img = std::fs::File::open(iso_path)?;
+    let img = std::fs::File::open(iso_path)?;
 
-    let volume = xdvdfs::read::read_volume(&mut img)
+    let mut dev = xdvdfs::blockdev::OffsetWrapper::new(img)
+        .map_err(|e: xdvdfs::util::Error<std::io::Error>| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{:?}", e))
+        })?;
+
+    let volume = xdvdfs::read::read_volume(&mut dev)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{:?}", e)))?;
 
     // `file_tree` returns a flat list of (parent_path, DirectoryEntryNode) pairs.
     let tree = volume
         .root_table
-        .file_tree(&mut img)
+        .file_tree(&mut dev)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{:?}", e)))?;
 
     let mut count = 0usize;
@@ -106,11 +111,10 @@ fn extract_xdvd(iso_path: &str, dest: &Path) -> std::io::Result<usize> {
                 std::fs::create_dir_all(parent_dir)?;
             }
 
-            // Read file data from the ISO image.
             let data = node
                 .node
                 .dirent
-                .read_data_all(&mut img)
+                .read_data_all(&mut dev)
                 .map_err(|e| {
                     std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
