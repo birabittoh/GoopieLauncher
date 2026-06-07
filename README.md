@@ -2,7 +2,7 @@
 
 A lightweight, native desktop launcher for [Goopie](https://goopie.xyz) — a platform for recompiled Xbox 360 games.
 
-This is a complete rewrite of the legacy [`SFML-CEF-Rexglue-Launcher`](../SFML-CEF-Rexglue-Launcher) in **Rust + [Tauri v2](https://v2.tauri.app)**. It uses the OS's native webview (WebKitGTK on Linux, WKWebView on macOS, WebView2 on Windows) instead of bundling Chromium, resulting in a dramatically smaller binary.
+This is a complete rewrite of the legacy [`SFML-CEF-Rexglue-Launcher`](https://github.com/SolarCookies/SFML-CEF-Rexglue-Launcher) in **Rust + [Tauri v2](https://v2.tauri.app)**. It uses the OS's native webview (WebKitGTK on Linux, WKWebView on macOS, WebView2 on Windows) instead of bundling Chromium, resulting in a dramatically smaller binary.
 
 ## Features
 
@@ -22,8 +22,6 @@ This approach keeps the website completely unchanged while providing the same sy
 ### Security
 
 The bridge token is randomly generated at launch and embedded in every request URL. Other local processes cannot make bridge calls without knowing the token.
-
-> **Note:** If goopie.xyz ever adds a restrictive `connect-src` CSP header in the future, you would need to either ask for the loopback origin to be whitelisted or switch to bundling the website.
 
 ## Building
 
@@ -85,13 +83,3 @@ Games are stored under:
 - Linux: `~/.local/share/Goopie/Games/`
 
 These paths match the legacy C++ launcher so existing installations are automatically found.
-
-## CI / Release
-
-GitHub Actions workflows mirror the naming convention of the legacy launcher:
-
-| File | Trigger | Purpose |
-|------|---------|---------|
-| `ci.yml` | Push/PR (non-release) | Build both platforms |
-| `_build.yml` | Called by ci/release | Reusable build job |
-| `release.yml` | `v*` tag push | Build + create GitHub Release |
