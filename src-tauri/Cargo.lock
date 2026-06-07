@@ -1639,6 +1639,7 @@ dependencies = [
  "tar",
  "tauri",
  "tauri-build",
+ "tempfile",
  "winreg 0.52.0",
  "xdvdfs",
  "zip",

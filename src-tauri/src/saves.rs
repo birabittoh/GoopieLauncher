@@ -233,3 +233,151 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const GAME: &str = "kameorepowered";
+
+    /// Sets up `<tmp>/games` and `<tmp>/user` roots plus a live save dir at
+    /// `<tmp>/user/<game>/` containing one file. Returns `(tempdir, games_root, user_root)`.
+    fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let games_root = tmp.path().join("games");
+        let user_root = tmp.path().join("user");
+        let live = layout::live_dir(&user_root, GAME);
+        std::fs::create_dir_all(&live).unwrap();
+        std::fs::write(live.join("KameoSave.svg"), b"save-data-v1").unwrap();
+        (tmp, games_root, user_root)
+    }
+
+    #[test]
+    fn backup_copies_live_into_slot_and_marks_active() {
+        let (_tmp, games_root, user_root) = fixture();
+
+        assert!(backup_save_at(&games_root, &user_root, GAME, "slot1"));
+
+        let copied = layout::saves_dir(&games_root, GAME).join("slot1").join("KameoSave.svg");
+        assert_eq!(std::fs::read(copied).unwrap(), b"save-data-v1");
+        assert_eq!(get_active_save_at(&games_root, GAME), "slot1");
+        assert_eq!(get_save_slots_at(&games_root, GAME), vec!["slot1".to_string()]);
+    }
+
+    #[test]
+    fn backup_fails_when_live_dir_is_missing() {
+        // Regression test for the reported bug: on Linux the launcher looked
+        // for the live save under Documents, where it never existed, so
+        // backup silently failed (and deleteCurrentSave silently "succeeded"
+        // without touching the real save).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let games_root = tmp.path().join("games");
+        let user_root = tmp.path().join("user"); // live dir intentionally not created
+
+        assert!(!backup_save_at(&games_root, &user_root, GAME, "slot1"));
+        assert!(get_save_slots_at(&games_root, GAME).is_empty());
+        assert_eq!(get_active_save_at(&games_root, GAME), "");
+    }
+
+    #[test]
+    fn restore_replaces_live_with_slot_contents() {
+        let (_tmp, games_root, user_root) = fixture();
+        assert!(backup_save_at(&games_root, &user_root, GAME, "slot1"));
+
+        // Mutate the live save so restore has something to overwrite/detect.
+        let live = layout::live_dir(&user_root, GAME);
+        std::fs::write(live.join("KameoSave.svg"), b"clobbered").unwrap();
+        std::fs::write(live.join("stale.tmp"), b"should be removed by restore").unwrap();
+
+        assert!(restore_save_at(&games_root, &user_root, GAME, "slot1"));
+
+        assert_eq!(std::fs::read(live.join("KameoSave.svg")).unwrap(), b"save-data-v1");
+        assert!(!live.join("stale.tmp").exists(), "restore should wipe the live dir before copying");
+        assert_eq!(get_active_save_at(&games_root, GAME), "slot1");
+    }
+
+    #[test]
+    fn restore_fails_when_slot_is_missing() {
+        let (_tmp, games_root, user_root) = fixture();
+        assert!(!restore_save_at(&games_root, &user_root, GAME, "does-not-exist"));
+    }
+
+    #[test]
+    fn delete_save_removes_slot_and_clears_active_marker_only_if_active() {
+        let (_tmp, games_root, user_root) = fixture();
+        assert!(backup_save_at(&games_root, &user_root, GAME, "slot1"));
+        assert!(backup_save_at(&games_root, &user_root, GAME, "slot2"));
+        assert_eq!(get_active_save_at(&games_root, GAME), "slot2");
+
+        // Deleting a non-active slot leaves the marker untouched.
+        assert!(delete_save_at(&games_root, GAME, "slot1"));
+        assert_eq!(get_active_save_at(&games_root, GAME), "slot2");
+        assert_eq!(get_save_slots_at(&games_root, GAME), vec!["slot2".to_string()]);
+
+        // Deleting the active slot clears the marker.
+        assert!(delete_save_at(&games_root, GAME, "slot2"));
+        assert_eq!(get_active_save_at(&games_root, GAME), "");
+        assert!(get_save_slots_at(&games_root, GAME).is_empty());
+    }
+
+    #[test]
+    fn delete_current_save_removes_live_dir_and_active_marker() {
+        let (_tmp, games_root, user_root) = fixture();
+        assert!(backup_save_at(&games_root, &user_root, GAME, "slot1"));
+        let live = layout::live_dir(&user_root, GAME);
+        assert!(live.exists());
+
+        assert!(delete_current_save_at(&games_root, &user_root, GAME));
+
+        assert!(!live.exists(), "live save directory should be gone");
+        assert_eq!(get_active_save_at(&games_root, GAME), "");
+    }
+
+    #[test]
+    fn delete_current_save_is_a_noop_when_already_absent() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let games_root = tmp.path().join("games");
+        let user_root = tmp.path().join("user");
+        // No live dir created — mirrors the buggy scenario where the launcher
+        // looked in the wrong base directory and found nothing.
+        assert!(delete_current_save_at(&games_root, &user_root, GAME));
+    }
+
+    #[test]
+    fn rename_save_renames_dir_and_follows_active_marker() {
+        let (_tmp, games_root, user_root) = fixture();
+        assert!(backup_save_at(&games_root, &user_root, GAME, "old-name"));
+        assert_eq!(get_active_save_at(&games_root, GAME), "old-name");
+
+        assert!(rename_save_at(&games_root, GAME, "old-name", "new-name"));
+
+        assert_eq!(get_save_slots_at(&games_root, GAME), vec!["new-name".to_string()]);
+        assert_eq!(get_active_save_at(&games_root, GAME), "new-name");
+    }
+
+    #[test]
+    fn rename_save_fails_if_source_missing_or_dest_exists() {
+        let (_tmp, games_root, user_root) = fixture();
+        assert!(backup_save_at(&games_root, &user_root, GAME, "a"));
+        assert!(backup_save_at(&games_root, &user_root, GAME, "b"));
+
+        assert!(!rename_save_at(&games_root, GAME, "does-not-exist", "c"));
+        assert!(!rename_save_at(&games_root, GAME, "a", "b"), "should not overwrite an existing slot");
+    }
+
+    /// End-to-end: backup the live save, wipe it (as "Create New Save" does),
+    /// then restore — the live data should come back byte-for-byte identical.
+    /// This is the exact flow the user reported as broken.
+    #[test]
+    fn round_trip_backup_then_wipe_then_restore() {
+        let (_tmp, games_root, user_root) = fixture();
+        let live = layout::live_dir(&user_root, GAME);
+
+        assert!(backup_save_at(&games_root, &user_root, GAME, "before-reset"));
+        assert!(delete_current_save_at(&games_root, &user_root, GAME));
+        assert!(!live.exists());
+
+        assert!(restore_save_at(&games_root, &user_root, GAME, "before-reset"));
+        assert_eq!(std::fs::read(live.join("KameoSave.svg")).unwrap(), b"save-data-v1");
+    }
+}
+

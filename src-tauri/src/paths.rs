@@ -110,3 +110,41 @@ pub fn vehicle_save_base() -> Option<PathBuf> {
         )
     }
 }
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use super::*;
+
+    fn env(vars: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
+        move |key| vars.iter().find(|(k, _)| *k == key).map(|(_, v)| v.to_string())
+    }
+
+    #[test]
+    fn rex_user_folder_prefers_xdg_data_home() {
+        let got = rex_user_folder_from_env(env(&[
+            ("XDG_DATA_HOME", "/custom/data"),
+            ("HOME", "/home/someone"),
+        ]));
+        assert_eq!(got, Some(PathBuf::from("/custom/data")));
+    }
+
+    #[test]
+    fn rex_user_folder_falls_back_to_home_local_share() {
+        let got = rex_user_folder_from_env(env(&[("HOME", "/home/someone")]));
+        assert_eq!(got, Some(PathBuf::from("/home/someone/.local/share")));
+    }
+
+    #[test]
+    fn rex_user_folder_ignores_empty_xdg_data_home() {
+        let got = rex_user_folder_from_env(env(&[
+            ("XDG_DATA_HOME", ""),
+            ("HOME", "/home/someone"),
+        ]));
+        assert_eq!(got, Some(PathBuf::from("/home/someone/.local/share")));
+    }
+
+    #[test]
+    fn rex_user_folder_none_without_home_or_xdg() {
+        let got = rex_user_folder_from_env(env(&[]));
+        assert_eq!(got, None);
+    }
+}
