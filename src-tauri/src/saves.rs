@@ -2,26 +2,106 @@
 //!
 //! Save slots live at `<games>/<game>/saves/<slot_name>/`.
 //! The active-slot marker is a plain-text file at `<games>/<game>/saves/.active`.
-//! Backup/restore copies to/from the OS Documents directory under `<game>/`.
+//! Backup/restore copies to/from `<rex_user_folder>/<game>/` — the directory the
+//! Rex runtime actually writes the live save to (see [`paths::rex_user_folder`]).
+//! This is the OS Documents folder on Windows, but `~/.local/share/<game>` (or
+//! `$XDG_DATA_HOME/<game>`) on Linux/macOS — *not* Documents.
 
 use std::path::{Path, PathBuf};
 
 use crate::{config, paths, platform};
 
-fn saves_dir(game: &str) -> PathBuf {
-    PathBuf::from(config::get_games_folder())
-        .join(game)
-        .join("saves")
-}
+/// Pure path helpers, parameterized over the two base directories so the core
+/// logic can be exercised in tests against temp directories instead of the
+/// real games folder / user folder.
+mod layout {
+    use std::path::{Path, PathBuf};
 
-fn active_save_file(game: &str) -> PathBuf {
-    saves_dir(game).join(".active")
+    pub fn saves_dir(games_root: &Path, game: &str) -> PathBuf {
+        games_root.join(game).join("saves")
+    }
+
+    pub fn active_save_file(games_root: &Path, game: &str) -> PathBuf {
+        saves_dir(games_root, game).join(".active")
+    }
+
+    pub fn live_dir(user_root: &Path, game: &str) -> PathBuf {
+        user_root.join(game)
+    }
 }
 
 // ── List / query ──────────────────────────────────────────────────────────────
 
 pub fn get_save_slots(game: &str) -> Vec<String> {
-    let dir = saves_dir(game);
+    get_save_slots_at(&games_root(), game)
+}
+
+pub fn get_save_slot_count(game: &str) -> i32 {
+    get_save_slots(game).len() as i32
+}
+
+pub fn get_active_save(game: &str) -> String {
+    get_active_save_at(&games_root(), game)
+}
+
+// ── Backup (game data → slot) ─────────────────────────────────────────────────
+
+pub fn backup_save(game: &str, slot_name: &str) -> bool {
+    let Some(user_root) = paths::rex_user_folder() else {
+        eprintln!("[saves] Could not determine the save user folder");
+        return false;
+    };
+    backup_save_at(&games_root(), &user_root, game, slot_name)
+}
+
+// ── Restore (slot → game data) ────────────────────────────────────────────────
+
+pub fn restore_save(game: &str, slot_name: &str) -> bool {
+    let Some(user_root) = paths::rex_user_folder() else {
+        eprintln!("[saves] Could not determine the save user folder");
+        return false;
+    };
+    restore_save_at(&games_root(), &user_root, game, slot_name)
+}
+
+// ── Delete ────────────────────────────────────────────────────────────────────
+
+pub fn delete_save(game: &str, slot_name: &str) -> bool {
+    delete_save_at(&games_root(), game, slot_name)
+}
+
+/// Delete the live game save data (not a slot).
+pub fn delete_current_save(game: &str) -> bool {
+    let Some(user_root) = paths::rex_user_folder() else {
+        eprintln!("[saves] Could not determine the save user folder");
+        return false;
+    };
+    delete_current_save_at(&games_root(), &user_root, game)
+}
+
+// ── Rename ────────────────────────────────────────────────────────────────────
+
+pub fn rename_save(game: &str, old_name: &str, new_name: &str) -> bool {
+    rename_save_at(&games_root(), game, old_name, new_name)
+}
+
+// ── Open save folder ──────────────────────────────────────────────────────────
+
+pub fn open_save_folder(game: &str) {
+    let Some(user_root) = paths::rex_user_folder() else { return };
+    let save_path = layout::live_dir(&user_root, game);
+    let _ = std::fs::create_dir_all(&save_path);
+    platform::open_folder(&save_path.to_string_lossy());
+}
+
+fn games_root() -> PathBuf {
+    PathBuf::from(config::get_games_folder())
+}
+
+// ── Core logic, parameterized over base directories (unit-testable) ──────────
+
+fn get_save_slots_at(games_root: &Path, game: &str) -> Vec<String> {
+    let dir = layout::saves_dir(games_root, game);
     if !dir.is_dir() {
         return Vec::new();
     }
@@ -35,51 +115,45 @@ pub fn get_save_slots(game: &str) -> Vec<String> {
     slots
 }
 
-pub fn get_save_slot_count(game: &str) -> i32 {
-    get_save_slots(game).len() as i32
-}
-
-pub fn get_active_save(game: &str) -> String {
-    std::fs::read_to_string(active_save_file(game))
+fn get_active_save_at(games_root: &Path, game: &str) -> String {
+    std::fs::read_to_string(layout::active_save_file(games_root, game))
         .map(|s| s.trim().to_string())
         .unwrap_or_default()
 }
 
-// ── Backup (game data → slot) ─────────────────────────────────────────────────
+fn set_active_save_at(games_root: &Path, game: &str, slot_name: &str) {
+    let active_file = layout::active_save_file(games_root, game);
+    if let Some(parent) = active_file.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&active_file, slot_name);
+}
 
-pub fn backup_save(game: &str, slot_name: &str) -> bool {
-    let Some(docs) = paths::documents_dir() else {
-        eprintln!("[saves] Could not determine Documents directory");
-        return false;
-    };
-
-    let source = docs.join(game);
+fn backup_save_at(games_root: &Path, user_root: &Path, game: &str, slot_name: &str) -> bool {
+    let source = layout::live_dir(user_root, game);
     if !source.exists() {
         eprintln!("[saves] Source save path does not exist: {}", source.display());
         return false;
     }
 
-    let dest = saves_dir(game).join(slot_name);
+    let dest = layout::saves_dir(games_root, game).join(slot_name);
     if let Err(e) = copy_dir_all(&source, &dest) {
         eprintln!("[saves] backupSave error: {}", e);
         return false;
     }
 
-    set_active_save(game, slot_name);
+    set_active_save_at(games_root, game, slot_name);
     true
 }
 
-// ── Restore (slot → game data) ────────────────────────────────────────────────
-
-pub fn restore_save(game: &str, slot_name: &str) -> bool {
-    let slot = saves_dir(game).join(slot_name);
+fn restore_save_at(games_root: &Path, user_root: &Path, game: &str, slot_name: &str) -> bool {
+    let slot = layout::saves_dir(games_root, game).join(slot_name);
     if !slot.exists() {
         eprintln!("[saves] Slot does not exist: {}", slot.display());
         return false;
     }
 
-    let Some(docs) = paths::documents_dir() else { return false };
-    let dest = docs.join(game);
+    let dest = layout::live_dir(user_root, game);
 
     // Remove existing game save data and replace with the slot contents.
     if dest.exists() {
@@ -94,14 +168,12 @@ pub fn restore_save(game: &str, slot_name: &str) -> bool {
         return false;
     }
 
-    set_active_save(game, slot_name);
+    set_active_save_at(games_root, game, slot_name);
     true
 }
 
-// ── Delete ────────────────────────────────────────────────────────────────────
-
-pub fn delete_save(game: &str, slot_name: &str) -> bool {
-    let slot = saves_dir(game).join(slot_name);
+fn delete_save_at(games_root: &Path, game: &str, slot_name: &str) -> bool {
+    let slot = layout::saves_dir(games_root, game).join(slot_name);
     if !slot.exists() {
         return false;
     }
@@ -110,16 +182,14 @@ pub fn delete_save(game: &str, slot_name: &str) -> bool {
         return false;
     }
     // Clear active marker if this was the active slot.
-    if get_active_save(game) == slot_name {
-        let _ = std::fs::remove_file(active_save_file(game));
+    if get_active_save_at(games_root, game) == slot_name {
+        let _ = std::fs::remove_file(layout::active_save_file(games_root, game));
     }
     true
 }
 
-/// Delete the live game save data from Documents (not a slot).
-pub fn delete_current_save(game: &str) -> bool {
-    let Some(docs) = paths::documents_dir() else { return false };
-    let save_path = docs.join(game);
+fn delete_current_save_at(games_root: &Path, user_root: &Path, game: &str) -> bool {
+    let save_path = layout::live_dir(user_root, game);
     if !save_path.exists() {
         return true; // Goal achieved — no data present.
     }
@@ -127,15 +197,13 @@ pub fn delete_current_save(game: &str) -> bool {
         eprintln!("[saves] deleteCurrentSave error: {}", e);
         return false;
     }
-    let _ = std::fs::remove_file(active_save_file(game));
+    let _ = std::fs::remove_file(layout::active_save_file(games_root, game));
     true
 }
 
-// ── Rename ────────────────────────────────────────────────────────────────────
-
-pub fn rename_save(game: &str, old_name: &str, new_name: &str) -> bool {
-    let old = saves_dir(game).join(old_name);
-    let new = saves_dir(game).join(new_name);
+fn rename_save_at(games_root: &Path, game: &str, old_name: &str, new_name: &str) -> bool {
+    let old = layout::saves_dir(games_root, game).join(old_name);
+    let new = layout::saves_dir(games_root, game).join(new_name);
     if !old.exists() || new.exists() {
         return false;
     }
@@ -143,30 +211,13 @@ pub fn rename_save(game: &str, old_name: &str, new_name: &str) -> bool {
         eprintln!("[saves] renameSave error: {}", e);
         return false;
     }
-    if get_active_save(game) == old_name {
-        set_active_save(game, new_name);
+    if get_active_save_at(games_root, game) == old_name {
+        set_active_save_at(games_root, game, new_name);
     }
     true
 }
 
-// ── Open save folder ──────────────────────────────────────────────────────────
-
-pub fn open_save_folder(game: &str) {
-    let Some(docs) = paths::documents_dir() else { return };
-    let save_path = docs.join(game);
-    let _ = std::fs::create_dir_all(&save_path);
-    platform::open_folder(&save_path.to_string_lossy());
-}
-
 // ── Internal helpers ──────────────────────────────────────────────────────────
-
-fn set_active_save(game: &str, slot_name: &str) {
-    let active_file = active_save_file(game);
-    if let Some(parent) = active_file.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let _ = std::fs::write(&active_file, slot_name);
-}
 
 fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
@@ -181,3 +232,4 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     }
     Ok(())
 }
+
