@@ -70,6 +70,12 @@ pub struct AppState {
     /// commands (e.g. `setOfflineMode`) `.navigate()` it to switch between the
     /// live site and the embedded offline bundle at runtime.
     pub window: Mutex<Option<tauri::WebviewWindow>>,
+    /// Cached result of the last `goopie.xyz` connectivity probe, refreshed
+    /// periodically by a background thread (see `offline_site::spawn_connectivity_monitor`).
+    /// Bridge calls are synchronous, so the actual (multi-second-timeout) probe
+    /// can't run on demand without freezing the UI — the website polls this
+    /// instead to grey out "switch to online mode" while the site is unreachable.
+    pub goopie_reachable: AtomicBool,
 }
 
 impl AppState {
@@ -84,6 +90,7 @@ impl AppState {
             running_game: Mutex::new(None),
             next_session_id: AtomicU64::new(1),
             window: Mutex::new(None),
+            goopie_reachable: AtomicBool::new(true),
         }
     }
 
@@ -480,6 +487,10 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
         // restarts, see config::set_offline_mode_preference) and immediately
         // navigates the window so the toggle takes effect without relaunching.
         "isOfflineMode" => json!(offline_site::is_offline_mode()),
+        // Cached, instantly-readable connectivity status (see AppState::goopie_reachable) —
+        // lets the website grey out "switch to online mode" while goopie.xyz is unreachable,
+        // without blocking the UI thread on a multi-second probe for every check.
+        "isGoopieReachable" => json!(state.goopie_reachable.load(Ordering::Relaxed)),
         "setOfflineMode" => {
             let offline = args.first().and_then(|v| v.as_bool()).unwrap_or(false);
             config::set_offline_mode_preference(offline);

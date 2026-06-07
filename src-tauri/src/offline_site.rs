@@ -8,6 +8,7 @@
 //! embed). It is a single-page app, so any path that doesn't match an
 //! embedded file falls back to `index.html`.
 
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use include_dir::{include_dir, Dir};
@@ -93,6 +94,19 @@ pub fn probe_connectivity() -> bool {
         .send()
         .map(|resp| resp.status().is_success() || resp.status().is_redirection())
         .unwrap_or(false)
+}
+
+/// Spawns a background thread that keeps `AppState::goopie_reachable` fresh by
+/// re-probing every 20 seconds. Bridge calls are synchronous, so the website
+/// reads this cached flag (via `isGoopieReachable`) instead of triggering a
+/// multi-second probe on every check — e.g. to grey out "switch to online
+/// mode" while offline-by-preference and goopie.xyz can't actually be reached.
+pub fn spawn_connectivity_monitor(state: std::sync::Arc<crate::AppState>) {
+    std::thread::spawn(move || loop {
+        let reachable = probe_connectivity();
+        state.goopie_reachable.store(reachable, Ordering::Relaxed);
+        std::thread::sleep(Duration::from_secs(20));
+    });
 }
 
 #[cfg(test)]

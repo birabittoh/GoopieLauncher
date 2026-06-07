@@ -110,6 +110,11 @@ pub fn run() {
             // bundle at runtime, without relaunching the app.
             *state_for_setup.window.lock().unwrap() = Some(window);
 
+            // Keeps AppState::goopie_reachable fresh so the website can grey
+            // out "switch to online mode" while goopie.xyz is unreachable,
+            // without blocking the (synchronous) bridge on a multi-second probe.
+            offline_site::spawn_connectivity_monitor(Arc::clone(&state_for_setup));
+
             Ok(())
         })
         // No tauri::command handlers — all native calls go through the bridge scheme.

@@ -110,6 +110,10 @@
   // persists an explicit, sticky choice and navigates immediately (no relaunch).
   window.isOfflineMode    = function ()       { return call('isOfflineMode', []); };
   window.setOfflineMode   = function (offline){ return call('setOfflineMode', [offline]); };
+  // Cached connectivity status, refreshed by a background probe every ~20s —
+  // cheap to poll (unlike a real probe, which can take seconds to time out),
+  // so the UI can grey out "switch to online mode" while unreachable.
+  window.isGoopieReachable = function ()      { return call('isGoopieReachable', []); };
 
   // ── Game-data disk cache (offline fallback) ──────────────────────────────────
   // Shape: `{ lastUpdated: <ISO-8601 string>, games: Game[] }`.
