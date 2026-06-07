@@ -30,13 +30,18 @@ pub fn default_games_folder() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("Games"))
 }
 
-/// Documents directory (for save backups / restore).
+/// Documents directory.
 ///
 /// Mirrors the C++ launcher's `GetDocumentsPath_()`: prefer the user-configured
 /// directory (honouring `XDG_DOCUMENTS_DIR` via `directories::UserDirs`), but
 /// fall back to `$HOME/Documents` when none is configured — e.g. on minimal
 /// Linux setups without `~/.config/user-dirs.dirs`. Without this fallback,
 /// `document_dir()` returns `None` and every save operation silently fails.
+///
+/// NOTE: this is *not* where game saves live on non-Windows platforms (see
+/// [`rex_user_folder`], which delegates to this on Windows only — hence the
+/// `allow(dead_code)` for non-Windows builds where nothing else calls it).
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn documents_dir() -> Option<PathBuf> {
     if let Some(dir) = directories::UserDirs::new().and_then(|d| d.document_dir().map(|p| p.to_path_buf())) {
         return Some(dir);
@@ -49,6 +54,40 @@ pub fn documents_dir() -> Option<PathBuf> {
     {
         None
     }
+}
+
+/// Base directory under which the Rex runtime stores per-game user data
+/// (saves, headers, shader cache, …) — i.e. `<rex_user_folder>/<recompName>/...`.
+///
+/// Mirrors `rex::filesystem::GetUserFolder()` from the recomp runtime
+/// (rexglue-sdk `src/core/filesystem_{win,posix}.cpp`):
+/// - Windows: `FOLDERID_Documents` (the OS Documents directory).
+/// - Linux/macOS: `$XDG_DATA_HOME`, falling back to `$HOME/.local/share`.
+///
+/// This is deliberately *different* from [`documents_dir`] on non-Windows —
+/// using Documents there means save backup/restore silently targets a path the
+/// game never writes to.
+pub fn rex_user_folder() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        documents_dir()
+    }
+    #[cfg(not(windows))]
+    {
+        rex_user_folder_from_env(|key| std::env::var(key).ok())
+    }
+}
+
+/// Env-driven implementation of [`rex_user_folder`] for non-Windows platforms,
+/// parameterized so it can be exercised in tests without touching real env vars.
+#[cfg(not(windows))]
+pub(crate) fn rex_user_folder_from_env(get: impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
+    if let Some(xdg) = get("XDG_DATA_HOME") {
+        if !xdg.is_empty() {
+            return Some(PathBuf::from(xdg));
+        }
+    }
+    Some(PathBuf::from(get("HOME")?).join(".local").join("share"))
 }
 
 /// Vehicle save base path for Nuts & Bolts.
