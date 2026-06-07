@@ -30,6 +30,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Needed to vendor the GoopieWebsite submodule for the embedded
+          # offline site (built by scripts/build-offline-site.sh, wired into
+          # `cargo tauri build` via tauri.conf.json's beforeBuildCommand).
+          submodules: recursive
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
       # ── Rust toolchain ─────────────────────────────────────────────────────
       - name: Install Rust stable
