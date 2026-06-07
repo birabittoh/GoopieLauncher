@@ -63,6 +63,11 @@
   window.Update          = function (g, u, a, v, p)    { return call('Update', [g, u, a, v, p]); };
   window.NeedsUpdate     = function (g, b, u, a)       { return call('NeedsUpdate', [g, b, u, a]); };
   window.Play            = function (g, b, c, e, r)    { return call('Play', [g, b, c, e, r]); };
+  // Running-game tracking: poll to drive the Play/Close button and the
+  // "close the running game to start this one?" confirmation prompt.
+  window.isGameRunning   = function ()    { return call('isGameRunning', []); };
+  window.getRunningGame  = function ()    { return call('getRunningGame', []); };
+  window.closeGame       = function ()    { return call('closeGame', []); };
   window.InstallPackage  = function (g, b, p, z, h, e) { return call('InstallPackage', [g, b, p, z, h, e]); };
   window.IsPackageInstalled = function (g, b, z)       { return call('IsPackageInstalled', [g, b, z]); };
 

@@ -15,9 +15,10 @@
 //!   3. `handle_bridge_request` dispatches each function name to Rust and returns JSON.
 
 use std::sync::{
-    atomic::{AtomicBool, AtomicI32, Ordering},
+    atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering},
     Arc, Mutex,
 };
+use std::time::{Duration, Instant};
 
 use crate::{config, download, games, iso, launcher, platform, saves, vehicles};
 
@@ -35,6 +36,20 @@ pub enum GoogleSignInResult {
     Err(String),
 }
 
+/// A game process currently being monitored by [`monitor_running_game`].
+///
+/// `session_id` disambiguates between successive launches: when the user closes
+/// the running game to start another, the old monitor thread notices its
+/// `session_id` no longer matches `AppState::running_game` and exits quietly
+/// instead of clobbering the new session's state.
+pub struct RunningGame {
+    pub session_id: u64,
+    pub game: String,
+    pub build: String,
+    pub child: std::process::Child,
+    pub started_at: Instant,
+}
+
 pub struct AppState {
     /// Download progress: -1 = idle, 0-100 = percent.
     pub download_progress: AtomicI32,
@@ -46,6 +61,11 @@ pub struct AppState {
     pub vehicles: Mutex<Vec<serde_json::Value>>,
     /// State of the native Google OAuth loopback flow.
     pub google_signin: Mutex<GoogleSignInResult>,
+    /// The currently-running game process, if any (polled by the frontend to
+    /// drive the Play/Close button and the "close running game?" prompt).
+    pub running_game: Mutex<Option<RunningGame>>,
+    /// Monotonically increasing counter handed out as each game is launched.
+    pub next_session_id: AtomicU64,
 }
 
 impl AppState {
@@ -57,6 +77,8 @@ impl AppState {
             is_extracting: AtomicBool::new(false),
             vehicles: Mutex::new(Vec::new()),
             google_signin: Mutex::new(GoogleSignInResult::Idle),
+            running_game: Mutex::new(None),
+            next_session_id: AtomicU64::new(1),
         }
     }
 
@@ -73,6 +95,72 @@ impl AppState {
         self.download_progress.store(-1, Ordering::Relaxed);
         *self.download_string.lock().unwrap() = String::new();
     }
+}
+
+// ── Game process monitoring ──────────────────────────────────────────────────
+
+/// Spawn `game`/`build` and start tracking it as the running game, replacing
+/// (and killing) any previously-running game first — mirrors the "closing the
+/// running game loses unsaved progress" behaviour the frontend warns about.
+fn launch_and_track(state: &Arc<AppState>, game: String, build: String, cvar_args: String, custom_exe: String, set_data_root: bool) {
+    kill_running_game(state);
+
+    let Some(child) = games::play(&game, &build, &cvar_args, &custom_exe, set_data_root) else {
+        return;
+    };
+
+    let session_id = state.next_session_id.fetch_add(1, Ordering::Relaxed);
+    *state.running_game.lock().unwrap() = Some(RunningGame {
+        session_id,
+        game,
+        build,
+        child,
+        started_at: Instant::now(),
+    });
+
+    let state_clone = Arc::clone(state);
+    std::thread::spawn(move || monitor_running_game(state_clone, session_id));
+}
+
+/// Poll the tracked process until it exits, then clear `running_game` — but
+/// only if it's still *our* session (the user may have closed it to launch a
+/// different game in the meantime, in which case that swap already cleared/
+/// replaced the entry and this thread has nothing left to do).
+fn monitor_running_game(state: Arc<AppState>, session_id: u64) {
+    loop {
+        std::thread::sleep(Duration::from_millis(750));
+
+        let mut lock = state.running_game.lock().unwrap();
+        let Some(running) = lock.as_mut() else { return };
+        if running.session_id != session_id {
+            return;
+        }
+        match running.child.try_wait() {
+            Ok(Some(_status)) => {
+                *lock = None;
+                return;
+            }
+            Ok(None) => { /* still running */ }
+            Err(e) => {
+                eprintln!("[bridge] failed to poll running game: {}", e);
+                *lock = None;
+                return;
+            }
+        }
+    }
+}
+
+/// Kill and reap the currently-tracked game process (if any), clearing the
+/// shared state. Used both for the explicit "Close" action and when swapping
+/// to a different game.
+fn kill_running_game(state: &Arc<AppState>) -> bool {
+    let mut lock = state.running_game.lock().unwrap();
+    let Some(mut running) = lock.take() else { return false };
+    if let Err(e) = running.child.kill() {
+        eprintln!("[bridge] failed to kill running game: {}", e);
+    }
+    let _ = running.child.wait();
+    true
 }
 
 // ── Token + init-script generation ───────────────────────────────────────────
@@ -279,10 +367,34 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
                     )
                 ))
                 .unwrap_or(false);
+            let state_clone = Arc::clone(state);
             std::thread::spawn(move || {
-                games::play(&game, &build, &cvar_args, &custom_exe, set_data_root);
+                launch_and_track(&state_clone, game, build, cvar_args, custom_exe, set_data_root);
             });
             Value::Null
+        }
+        // ── Running-game tracking ─────────────────────────────────────────────
+        // The frontend polls these to swap the Play button to "Close" and to
+        // decide whether to prompt before launching a different game.
+        "isGameRunning" => {
+            let lock = state.running_game.lock().unwrap();
+            json!(lock.is_some())
+        }
+        "getRunningGame" => {
+            let lock = state.running_game.lock().unwrap();
+            match lock.as_ref() {
+                Some(running) => json!({
+                    "game": running.game,
+                    "build": running.build,
+                    "secondsPlayed": running.started_at.elapsed().as_secs(),
+                }),
+                None => Value::Null,
+            }
+        }
+        // Kills the running game immediately ("all unsaved progress will be lost",
+        // per the confirmation prompt the frontend shows before calling this).
+        "closeGame" => {
+            json!(kill_running_game(state))
         }
         "InstallPackage" => {
             let game       = str_arg(&args, 0);
