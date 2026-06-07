@@ -30,6 +30,21 @@ else
   exit 1
 fi
 
+# GoopieWebsite reads its Firebase project config from VITE_FIREBASE_* at
+# build time (see src/app/firebase.ts) and calls initializeApp()/getAuth()
+# unconditionally on load — without these, apiKey is undefined and the app
+# crashes to a blank page with `auth/invalid-api-key` before it can render
+# anything, even offline UI. These are Firebase Web *config* values, not
+# secrets — they're already public in the live site's deployed JS bundle
+# (Firebase's security model relies on Firestore/Storage rules, not on
+# hiding them), so it's safe to bake them in here for the embedded copy.
+export VITE_FIREBASE_API_KEY="${VITE_FIREBASE_API_KEY:-AIzaSyCUbUOOC-Jkb51XmLFGJIzbHxaw-EUgZm0}"
+export VITE_FIREBASE_AUTH_DOMAIN="${VITE_FIREBASE_AUTH_DOMAIN:-goopie-f3ef6.firebaseapp.com}"
+export VITE_FIREBASE_PROJECT_ID="${VITE_FIREBASE_PROJECT_ID:-goopie-f3ef6}"
+export VITE_FIREBASE_STORAGE_BUCKET="${VITE_FIREBASE_STORAGE_BUCKET:-goopie-f3ef6.firebasestorage.app}"
+export VITE_FIREBASE_MESSAGING_SENDER_ID="${VITE_FIREBASE_MESSAGING_SENDER_ID:-514568294125}"
+export VITE_FIREBASE_APP_ID="${VITE_FIREBASE_APP_ID:-1:514568294125:web:4c5064c3dc062c7ce086e4}"
+
 echo "Building GoopieWebsite static bundle (using ${INSTALL[0]})..."
 (cd "$SITE_SRC" && "${INSTALL[@]}" && "${BUILD[@]}")
 
