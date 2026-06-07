@@ -20,7 +20,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use crate::{config, download, games, iso, launcher, platform, saves, vehicles};
+use crate::{config, download, games, iso, launcher, offline_site, paths, platform, saves, vehicles};
 
 // ── Shared application state ─────────────────────────────────────────────────
 
@@ -66,6 +66,10 @@ pub struct AppState {
     pub running_game: Mutex<Option<RunningGame>>,
     /// Monotonically increasing counter handed out as each game is launched.
     pub next_session_id: AtomicU64,
+    /// Handle to the main window, set once during `.setup()`. Lets bridge
+    /// commands (e.g. `setOfflineMode`) `.navigate()` it to switch between the
+    /// live site and the embedded offline bundle at runtime.
+    pub window: Mutex<Option<tauri::WebviewWindow>>,
 }
 
 impl AppState {
@@ -79,6 +83,7 @@ impl AppState {
             google_signin: Mutex::new(GoogleSignInResult::Idle),
             running_game: Mutex::new(None),
             next_session_id: AtomicU64::new(1),
+            window: Mutex::new(None),
         }
     }
 
@@ -463,6 +468,47 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
         "reloadVehicles" => {
             let list = vehicles::reload_vehicles();
             *state.vehicles.lock().unwrap() = list;
+            json!(true)
+        }
+
+        // ── Offline mode ──────────────────────────────────────────────────────
+        // `isOfflineMode` reflects the *effective* mode for this launch: the
+        // user's explicit choice if they've enabled offline mode (honored
+        // unconditionally), otherwise a live probe (they prefer online, so
+        // unreachability is a transient fallback, never persisted).
+        // `setOfflineMode` persists the user's explicit choice (survives
+        // restarts, see config::set_offline_mode_preference) and immediately
+        // navigates the window so the toggle takes effect without relaunching.
+        "isOfflineMode" => json!(offline_site::is_offline_mode()),
+        "setOfflineMode" => {
+            let offline = args.first().and_then(|v| v.as_bool()).unwrap_or(false);
+            config::set_offline_mode_preference(offline);
+            if let Some(window) = state.window.lock().unwrap().as_ref() {
+                let url = if offline {
+                    offline_site::offline_site_url().to_string()
+                } else {
+                    crate::REMOTE_URL.to_string()
+                };
+                if let Ok(parsed) = url.parse() {
+                    let _ = window.navigate(parsed);
+                }
+            }
+            json!(true)
+        }
+
+        // ── Game-data disk cache (for offline use) ───────────────────────────
+        // Shape: `{ lastUpdated: <ISO-8601 string>, games: Game[] }`. Written by
+        // the website on every successful Firestore fetch, read back as a
+        // fallback when offline (Firestore is unreachable from the embedded site).
+        "getCachedGamesData" => match std::fs::read_to_string(paths::games_cache_file()) {
+            Ok(s) => serde_json::from_str(&s).unwrap_or(Value::Null),
+            Err(_) => Value::Null,
+        },
+        "setCachedGamesData" => {
+            let data = args.into_iter().next().unwrap_or(Value::Null);
+            if let Ok(s) = serde_json::to_string(&data) {
+                let _ = std::fs::write(paths::games_cache_file(), s);
+            }
             json!(true)
         }
 

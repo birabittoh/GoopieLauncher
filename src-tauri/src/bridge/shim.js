@@ -105,6 +105,17 @@
   window.GoogleSignIn          = function ()  { return call('GoogleSignIn', []); };
   window.getGoogleSignInResult = function ()  { return call('getGoogleSignInResult', []); };
 
+  // ── Offline mode ─────────────────────────────────────────────────────────────
+  // `isOfflineMode` reflects the effective mode for this launch; `setOfflineMode`
+  // persists an explicit, sticky choice and navigates immediately (no relaunch).
+  window.isOfflineMode    = function ()       { return call('isOfflineMode', []); };
+  window.setOfflineMode   = function (offline){ return call('setOfflineMode', [offline]); };
+
+  // ── Game-data disk cache (offline fallback) ──────────────────────────────────
+  // Shape: `{ lastUpdated: <ISO-8601 string>, games: Game[] }`.
+  window.getCachedGamesData = function ()     { return call('getCachedGamesData', []); };
+  window.setCachedGamesData = function (data) { return call('setCachedGamesData', [data]); };
+
   // ── Misc ─────────────────────────────────────────────────────────────────────
   window.testFunction     = function (s)      { return call('testFunction', [s]); };
 
