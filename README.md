@@ -19,10 +19,6 @@ The launcher loads the live UI from `https://goopie.xyz` and bridges native func
 
 This approach keeps the website completely unchanged while providing the same synchronous call semantics the site expects.
 
-### Security
-
-The bridge token is randomly generated at launch and embedded in every request URL. Other local processes cannot make bridge calls without knowing the token.
-
 ## Building
 
 ### Prerequisites
@@ -56,12 +52,19 @@ Bundles are output to `src-tauri/target/release/bundle/`.
 
 ## URL selection
 
-The launcher URL is resolved in this priority order (no auto-detection):
+The launcher URL is resolved in this priority order:
 
 1. `--url <URL>` CLI argument
 2. `--local` CLI flag → `http://localhost:5173/`
 3. `GOOPIE_URL` environment variable
-4. Default: `https://goopie.xyz`
+4. If the user has explicitly enabled offline mode (see [Offline mode](#offline-mode)),
+   that's honored unconditionally — no connectivity probe, no requests to
+   `goopie.xyz` at all
+5. Otherwise (the user prefers online): probe `https://goopie.xyz`'s
+   reachability on this launch and fall back to the embedded offline bundle if
+   it can't be reached
+
+Options 1–3 are dev overrides and bypass offline-mode resolution entirely.
 
 Examples:
 
@@ -70,6 +73,28 @@ Examples:
 GOOPIE_URL=http://localhost:8080 ./goopie-launcher
 ./goopie-launcher --url https://staging.goopie.xyz
 ```
+
+## Offline mode
+
+The launcher ships an embedded, statically-served copy of GoopieWebsite
+(vendored as the `GoopieWebsite` git submodule, pinned to its `tauri-support`
+branch) with enough functionality to browse and launch installed games.
+
+Clone with submodules, or run `git submodule update --init` afterwards:
+
+```bash
+git clone --recurse-submodules <repo-url>
+```
+
+To (re)build the embedded offline bundle from the submodule:
+
+```bash
+./scripts/build-offline-site.sh
+```
+
+This runs automatically as part of `cargo tauri build` (via `beforeBuildCommand`),
+but not for plain `cargo build`/`cargo tauri dev` — a placeholder page ships in
+`src-tauri/offline-site/` so those keep working without a Node/bun toolchain.
 
 ## Configuration
 
