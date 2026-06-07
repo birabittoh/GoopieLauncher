@@ -109,8 +109,11 @@ pub fn google_sign_in() -> Result<String, String> {
         state_nonce,
     );
 
-    // Open the system browser (same `open` crate used by OpenExternalLink).
-    open::that(&auth_url).map_err(|e| format!("Could not open system browser: {}", e))?;
+    // Open the system browser (sanitizes the AppImage env first — see
+    // `platform::open_in_browser` — otherwise xdg-open/the browser can fail
+    // against the AppImage's bundled LD_LIBRARY_PATH with exit code 4).
+    crate::platform::open_in_browser(&auth_url)
+        .map_err(|e| format!("Could not open system browser: {}", e))?;
 
     // Wait for the browser to redirect back (5-minute timeout).
     // We spin up a separate thread so we can time-box the blocking accept().
