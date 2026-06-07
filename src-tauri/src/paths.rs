@@ -31,8 +31,24 @@ pub fn default_games_folder() -> PathBuf {
 }
 
 /// Documents directory (for save backups / restore).
+///
+/// Mirrors the C++ launcher's `GetDocumentsPath_()`: prefer the user-configured
+/// directory (honouring `XDG_DOCUMENTS_DIR` via `directories::UserDirs`), but
+/// fall back to `$HOME/Documents` when none is configured — e.g. on minimal
+/// Linux setups without `~/.config/user-dirs.dirs`. Without this fallback,
+/// `document_dir()` returns `None` and every save operation silently fails.
 pub fn documents_dir() -> Option<PathBuf> {
-    directories::UserDirs::new()?.document_dir().map(|p| p.to_path_buf())
+    if let Some(dir) = directories::UserDirs::new().and_then(|d| d.document_dir().map(|p| p.to_path_buf())) {
+        return Some(dir);
+    }
+    #[cfg(not(windows))]
+    {
+        return Some(PathBuf::from(std::env::var("HOME").ok()?).join("Documents"));
+    }
+    #[cfg(windows)]
+    {
+        None
+    }
 }
 
 /// Vehicle save base path for Nuts & Bolts.
