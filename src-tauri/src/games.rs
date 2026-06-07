@@ -2,8 +2,9 @@
 //! NeedsUpdate, and package management.
 
 use std::{
+    collections::HashSet,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use crate::{archive, config, download, AppState};
@@ -74,10 +75,19 @@ fn migrate_legacy_install(game: &str) {
     let build_key = sanitize_build_key(&version);
     let dest = root.join("builds").join(&build_key);
     if dest.exists() {
-        eprintln!(
-            "[games] migrate_legacy_install: {} already has builds/{}; leaving legacy files at the game root",
-            game, build_key
-        );
+        // This is a permanent, idempotent state for games left in it (the
+        // legacy sidecar is intentionally not removed, so this check — and
+        // therefore this branch — runs on every `build_dir()` call, which
+        // happens many times per second while the UI polls install status).
+        // Log it once per game per process instead of spamming stderr.
+        static WARNED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+        let warned = WARNED.get_or_init(|| Mutex::new(HashSet::new()));
+        if warned.lock().unwrap().insert(game.to_string()) {
+            eprintln!(
+                "[games] migrate_legacy_install: {} already has builds/{}; leaving legacy files at the game root",
+                game, build_key
+            );
+        }
         return;
     }
 
