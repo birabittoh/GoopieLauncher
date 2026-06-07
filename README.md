@@ -42,6 +42,16 @@ cargo tauri dev
 cargo tauri dev -- -- --local
 ```
 
+> [!NOTE]
+> `build.devUrl` in `tauri.conf.json` points at `https://goopie.xyz` (so plain
+> `cargo tauri dev` loads the live site). Without internet access, the Tauri
+> CLI itself panics trying to resolve that URL's DNS to "wait for the dev
+> server" — unrelated to this launcher's own offline mode, since that crash
+> happens before the app is even built/launched. Work around it with:
+> ```bash
+> cargo tauri dev --no-dev-server-wait
+> ```
+
 ### Production build
 
 ```bash
