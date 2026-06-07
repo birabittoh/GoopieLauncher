@@ -1,0 +1,4 @@
+[submodule "GoopieWebsite"]
+	path = GoopieWebsite
+	url = https://github.com/SolarCookies/GoopieWebsite
+	branch = tauri-support
