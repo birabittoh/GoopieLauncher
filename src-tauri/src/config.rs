@@ -87,6 +87,53 @@ pub fn set_language(lang: i32) {
     }
 }
 
+// ── Offline mode preference ───────────────────────────────────────────────────
+
+/// Whether the user has explicitly switched the launcher into offline mode
+/// (via the toggle button). Defaults to `false` (prefer online).
+///
+/// This is the user's *wish*, not the effective mode: when it's `false` (the
+/// user wants the live site) but `goopie.xyz` can't be reached, the launcher
+/// still falls back to the embedded offline bundle for that launch — without
+/// touching this persisted preference, so it recovers automatically once
+/// connectivity returns. When it's `true`, the launcher stays offline
+/// unconditionally until the user flips it back — connectivity is irrelevant.
+///
+/// Stored via the same mechanism as the games-folder/language settings, so it
+/// survives launcher restarts exactly like those do.
+pub fn get_offline_mode_preference() -> bool {
+    #[cfg(windows)]
+    {
+        use winreg::{enums::*, RegKey};
+        RegKey::predef(HKEY_CURRENT_USER)
+            .open_subkey("Software\\GoopieLauncher")
+            .ok()
+            .and_then(|key| key.get_value::<u32, _>("OfflineMode").ok())
+            .map(|v| v != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(windows))]
+    {
+        ini_read("OfflineMode", "0") == "1"
+    }
+}
+
+pub fn set_offline_mode_preference(offline: bool) {
+    #[cfg(windows)]
+    {
+        use winreg::{enums::*, RegKey};
+        if let Ok((key, _)) = RegKey::predef(HKEY_CURRENT_USER)
+            .create_subkey("Software\\GoopieLauncher")
+        {
+            let _ = key.set_value("OfflineMode", &(offline as u32));
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        ini_write("OfflineMode", if offline { "1" } else { "0" });
+    }
+}
+
 // ── INI helpers (non-Windows) ─────────────────────────────────────────────────
 
 #[cfg(not(windows))]

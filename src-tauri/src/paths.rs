@@ -30,6 +30,18 @@ pub fn default_games_folder() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("Games"))
 }
 
+/// Path to the on-disk cache of the games catalogue (`{ lastUpdated, games }`),
+/// written by the website (via the bridge) on every successful Firestore fetch
+/// and read back when offline. Lives next to the games folder's parent so it
+/// survives independently of any single game install.
+pub fn games_cache_file() -> PathBuf {
+    let base = directories::BaseDirs::new()
+        .map(|d| d.data_local_dir().join("Goopie"))
+        .unwrap_or_else(|| PathBuf::from("."));
+    let _ = std::fs::create_dir_all(&base);
+    base.join("games-cache.json")
+}
+
 /// Documents directory.
 ///
 /// Mirrors the C++ launcher's `GetDocumentsPath_()`: prefer the user-configured
