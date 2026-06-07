@@ -49,17 +49,22 @@
 
   // ── Game state ───────────────────────────────────────────────────────────────
   window.isIsoInstalled      = function (g)            { return call('isIsoInstalled', [g]); };
-  window.isExeUpdated        = function (g)            { return call('isExeUpdated', [g]); };
-  window.getInstalledVersion = function (g)            { return call('getInstalledVersion', [g]); };
+  window.isExeUpdated        = function (g, b)         { return call('isExeUpdated', [g, b]); };
+  // `build` (below) identifies an installed build by its on-disk key — i.e.
+  // the `name` field returned by getInstalledBuilds(g), which equals the
+  // sanitised release tag the build was installed under.
+  window.getInstalledVersion = function (g, b)         { return call('getInstalledVersion', [g, b]); };
+  window.getInstalledBuilds  = function (g)            { return call('getInstalledBuilds', [g]); };
 
   // ── Long-running ops (fire-and-forget; poll for progress) ────────────────────
   window.Install         = function (g)                { return call('Install', [g]); };
-  window.Uninstall       = function (g)                { return call('Uninstall', [g]); };
+  window.Uninstall       = function (g, b)             { return call('Uninstall', [g, b]); };
+  window.UninstallAll    = function (g)                { return call('UninstallAll', [g]); };
   window.Update          = function (g, u, a, v, p)    { return call('Update', [g, u, a, v, p]); };
-  window.NeedsUpdate     = function (g, u, a)          { return call('NeedsUpdate', [g, u, a]); };
-  window.Play            = function (g, c, e, r)       { return call('Play', [g, c, e, r]); };
-  window.InstallPackage  = function (g, p, z, h, e)    { return call('InstallPackage', [g, p, z, h, e]); };
-  window.IsPackageInstalled = function (g, z)          { return call('IsPackageInstalled', [g, z]); };
+  window.NeedsUpdate     = function (g, b, u, a)       { return call('NeedsUpdate', [g, b, u, a]); };
+  window.Play            = function (g, b, c, e, r)    { return call('Play', [g, b, c, e, r]); };
+  window.InstallPackage  = function (g, b, p, z, h, e) { return call('InstallPackage', [g, b, p, z, h, e]); };
+  window.IsPackageInstalled = function (g, b, z)       { return call('IsPackageInstalled', [g, b, z]); };
 
   // ── Progress polling ─────────────────────────────────────────────────────────
   window.isExtracting        = function ()    { return call('isExtracting', []); };

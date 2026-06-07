@@ -212,9 +212,13 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
         }
 
         // ── Game state ────────────────────────────────────────────────────────
+        // `build` identifies which installed build (release tag directory) an
+        // op applies to — see games::get_installed_builds for how the website
+        // discovers the available build keys for a game.
         "isIsoInstalled"      => json!(games::is_iso_installed(&str_arg(&args, 0))),
-        "isExeUpdated"        => json!(games::is_exe_updated(&str_arg(&args, 0))),
-        "getInstalledVersion" => json!(games::get_installed_version(&str_arg(&args, 0))),
+        "isExeUpdated"        => json!(games::is_exe_updated(&str_arg(&args, 0), &str_arg(&args, 1))),
+        "getInstalledVersion" => json!(games::get_installed_version(&str_arg(&args, 0), &str_arg(&args, 1))),
+        "getInstalledBuilds"  => json!(games::get_installed_builds(&str_arg(&args, 0))),
 
         // ── Long-running ops ──────────────────────────────────────────────────
         "Install" => {
@@ -224,7 +228,11 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
             Value::Null
         }
         "Uninstall" => {
-            games::uninstall(&str_arg(&args, 0));
+            games::uninstall(&str_arg(&args, 0), &str_arg(&args, 1));
+            Value::Null
+        }
+        "UninstallAll" => {
+            games::uninstall_all(&str_arg(&args, 0));
             Value::Null
         }
         "Update" => {
@@ -250,19 +258,21 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
         }
         "NeedsUpdate" => {
             let game = str_arg(&args, 0);
-            let api_url = str_arg(&args, 1);
-            let asset = if args.get(2).and_then(|v| v.as_str()).unwrap_or("").is_empty() {
+            let build = str_arg(&args, 1);
+            let api_url = str_arg(&args, 2);
+            let asset = if args.get(3).and_then(|v| v.as_str()).unwrap_or("").is_empty() {
                 None
             } else {
-                Some(str_arg(&args, 2))
+                Some(str_arg(&args, 3))
             };
-            json!(games::needs_update(&game, &api_url, asset.as_deref()))
+            json!(games::needs_update(&game, &build, &api_url, asset.as_deref()))
         }
         "Play" => {
             let game     = str_arg(&args, 0);
-            let cvar_args = str_arg(&args, 1);
-            let custom_exe = str_arg(&args, 2);
-            let set_data_root = args.get(3)
+            let build    = str_arg(&args, 1);
+            let cvar_args = str_arg(&args, 2);
+            let custom_exe = str_arg(&args, 3);
+            let set_data_root = args.get(4)
                 .map(|v| v.as_bool().unwrap_or(
                     v.as_i64().map(|n| n != 0).unwrap_or(
                         v.as_str().map(|s| matches!(s, "1" | "true" | "yes")).unwrap_or(false)
@@ -270,24 +280,26 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
                 ))
                 .unwrap_or(false);
             std::thread::spawn(move || {
-                games::play(&game, &cvar_args, &custom_exe, set_data_root);
+                games::play(&game, &build, &cvar_args, &custom_exe, set_data_root);
             });
             Value::Null
         }
         "InstallPackage" => {
             let game       = str_arg(&args, 0);
-            let prefix     = str_arg(&args, 1);
-            let zip_asset  = str_arg(&args, 2);
+            let build      = str_arg(&args, 1);
+            let prefix     = str_arg(&args, 2);
+            let zip_asset  = str_arg(&args, 3);
             let state_clone = Arc::clone(state);
             std::thread::spawn(move || {
-                games::install_package(&game, &prefix, &zip_asset, state_clone);
+                games::install_package(&game, &build, &prefix, &zip_asset, state_clone);
             });
             Value::Null
         }
         "IsPackageInstalled" => {
-            let game = str_arg(&args, 0);
-            let zip  = str_arg(&args, 1);
-            json!(games::is_package_installed(&game, &zip))
+            let game  = str_arg(&args, 0);
+            let build = str_arg(&args, 1);
+            let zip   = str_arg(&args, 2);
+            json!(games::is_package_installed(&game, &build, &zip))
         }
 
         // ── Progress polling ──────────────────────────────────────────────────

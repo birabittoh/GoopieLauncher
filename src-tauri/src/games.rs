@@ -9,25 +9,110 @@ use std::{
 use crate::{archive, config, download, AppState};
 
 // ── Path helpers ──────────────────────────────────────────────────────────────
+//
+// Each game gets a root directory `<games>/<recompName>/` containing:
+//   builds/<tag>/   one self-contained install per release tag (exe, sidecar, …)
+//   assets/         shared ISO data (default.xex etc.) — one copy per game
+//   saves/          shared save-game data — one copy per game
+//
+// Builds used to be extracted directly into the game root, so updating to a
+// new version overwrote the previous install in place. `migrate_legacy_install`
+// moves such flat installs into `builds/<version>/` the first time they're
+// touched, so existing players keep their installed build without a re-download.
 
 fn games_root() -> PathBuf {
     PathBuf::from(config::get_games_folder())
 }
 
-fn game_dir(game: &str) -> PathBuf {
+/// Root directory for a game: `<games>/<recompName>/`. Houses the shared
+/// `assets/`, `saves/`, and `builds/` subdirectories.
+fn game_root(game: &str) -> PathBuf {
     games_root().join(game)
+}
+
+/// Directory for a single installed build: `<games>/<recompName>/builds/<tag>/`.
+/// Lazily migrates a pre-existing flat (single-build) install on first access,
+/// so this is the one place build-scoped operations should resolve their path
+/// through.
+fn build_dir(game: &str, build: &str) -> PathBuf {
+    migrate_legacy_install(game);
+    game_root(game).join("builds").join(sanitize_build_key(build))
+}
+
+/// Sanitise a version tag for safe use as a directory name (replace path
+/// separators and other filesystem-unfriendly characters).
+fn sanitize_build_key(tag: &str) -> String {
+    let cleaned: String = tag
+        .trim()
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            c => c,
+        })
+        .collect();
+    if cleaned.is_empty() {
+        "unknown".to_string()
+    } else {
+        cleaned
+    }
+}
+
+/// Move a pre-existing flat install (root-level `.installed.json` and its
+/// sibling files) into `builds/<version>/`. Idempotent: a no-op once migrated,
+/// and leaves the legacy files alone if the destination already exists (e.g. a
+/// build under the same tag was separately installed) to avoid clobbering data.
+fn migrate_legacy_install(game: &str) {
+    let root = game_root(game);
+    let legacy_sidecar = root.join(".installed.json");
+    if !legacy_sidecar.is_file() {
+        return;
+    }
+
+    let version = std::fs::read_to_string(&legacy_sidecar)
+        .map(|s| json_extract_str(&s, "version"))
+        .unwrap_or_default();
+    let build_key = sanitize_build_key(&version);
+    let dest = root.join("builds").join(&build_key);
+    if dest.exists() {
+        eprintln!(
+            "[games] migrate_legacy_install: {} already has builds/{}; leaving legacy files at the game root",
+            game, build_key
+        );
+        return;
+    }
+
+    let Ok(entries) = std::fs::read_dir(&root) else { return };
+    let entries: Vec<_> = entries.flatten().collect();
+    if let Err(e) = std::fs::create_dir_all(&dest) {
+        eprintln!("[games] migrate_legacy_install: failed to create {}: {}", dest.display(), e);
+        return;
+    }
+    for entry in entries {
+        let name = entry.file_name();
+        if name == "assets" || name == "saves" || name == "builds" {
+            continue;
+        }
+        let from = entry.path();
+        let to = dest.join(&name);
+        if let Err(e) = std::fs::rename(&from, &to) {
+            eprintln!("[games] migrate_legacy_install: failed to move {} -> {}: {}", from.display(), to.display(), e);
+        }
+    }
+    eprintln!("[games] Migrated legacy install of {} into builds/{}", game, build_key);
 }
 
 // ── Basic state queries ───────────────────────────────────────────────────────
 
-/// Returns `true` if `<games>/<game>/assets/default.xex` exists.
+/// Returns `true` if `<games>/<game>/assets/default.xex` exists. ISO data is
+/// shared across all builds of a game, so this is not build-scoped.
 pub fn is_iso_installed(game: &str) -> bool {
-    game_dir(game).join("assets").join("default.xex").exists()
+    game_root(game).join("assets").join("default.xex").exists()
 }
 
-/// Returns `true` if the game executable exists (canonical name or sidecar-recorded path).
-pub fn is_exe_updated(game: &str) -> bool {
-    let dir = game_dir(game);
+/// Returns `true` if the build's executable exists (canonical name or
+/// sidecar-recorded path).
+pub fn is_exe_updated(game: &str, build: &str) -> bool {
+    let dir = build_dir(game, build);
 
     // Check canonical name first.
     let canonical = canonical_exe_name(game);
@@ -45,28 +130,70 @@ pub fn is_exe_updated(game: &str) -> bool {
     false
 }
 
-/// Returns the raw JSON content of `.installed.json`, or an empty string.
-pub fn get_installed_version(game: &str) -> String {
-    let path = game_dir(game).join(".installed.json");
+/// Returns the raw JSON content of a build's `.installed.json`, or an empty string.
+pub fn get_installed_version(game: &str, build: &str) -> String {
+    let path = build_dir(game, build).join(".installed.json");
     std::fs::read_to_string(&path).unwrap_or_default()
+}
+
+/// Enumerate every installed build for a game by scanning `builds/*` and
+/// reading each one's `.installed.json` sidecar. `name` is the on-disk
+/// (sanitised) build key — pass it back as the `build` argument to
+/// Play/Uninstall/NeedsUpdate/etc.
+pub fn get_installed_builds(game: &str) -> Vec<serde_json::Value> {
+    migrate_legacy_install(game);
+    let builds_root = game_root(game).join("builds");
+    let Ok(entries) = std::fs::read_dir(&builds_root) else { return Vec::new() };
+    let mut builds: Vec<serde_json::Value> = entries
+        .flatten()
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let sidecar = std::fs::read_to_string(e.path().join(".installed.json")).unwrap_or_default();
+            serde_json::json!({
+                "name": name,
+                "version": json_extract_str(&sidecar, "version"),
+                "asset": json_extract_str(&sidecar, "asset"),
+                "exePath": json_extract_str(&sidecar, "exePath"),
+            })
+        })
+        .collect();
+    builds.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+    builds
 }
 
 // ── Uninstall ─────────────────────────────────────────────────────────────────
 
-/// Remove all game files except the `saves/` subdirectory.
-pub fn uninstall(game: &str) {
-    let dir = game_dir(game);
+/// Remove a single installed build (its entire `builds/<tag>/` directory).
+/// Shared `saves/` and `assets/` (ISO data) are never touched.
+pub fn uninstall(game: &str, build: &str) {
+    let dir = build_dir(game, build);
     if !dir.exists() {
         return;
     }
-    let Ok(entries) = std::fs::read_dir(&dir) else { return };
-    for entry in entries.flatten() {
-        if entry.file_name() != "saves" {
-            let _ = std::fs::remove_dir_all(entry.path())
-                .or_else(|_| std::fs::remove_file(entry.path()));
-        }
+    if let Err(e) = std::fs::remove_dir_all(&dir) {
+        eprintln!("[games] Failed to uninstall {} build {}: {}", game, build, e);
+        return;
     }
-    eprintln!("[games] Uninstalled {} (saves preserved)", game);
+    eprintln!("[games] Uninstalled {} build {} (saves/assets preserved)", game, build);
+}
+
+/// Remove every installed build for a game, keeping `saves/` and `assets/`.
+pub fn uninstall_all(game: &str) {
+    let root = game_root(game);
+    if !root.exists() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(&root) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if name == "saves" || name == "assets" {
+            continue;
+        }
+        let _ = std::fs::remove_dir_all(entry.path())
+            .or_else(|_| std::fs::remove_file(entry.path()));
+    }
+    eprintln!("[games] Uninstalled all builds of {} (saves/assets preserved)", game);
 }
 
 // ── NeedsUpdate ──────────────────────────────────────────────────────────────
@@ -76,7 +203,8 @@ pub fn uninstall(game: &str) {
 /// - Archive assets: compare stored `version` tag in `.installed.json` vs `tag_name` from the
 ///   GitHub API response.
 /// - Legacy single-exe assets: compare local SHA256 vs the `digest` field in the GitHub API.
-pub fn needs_update(game: &str, github_api_url: &str, asset_name: Option<&str>) -> bool {
+pub fn needs_update(game: &str, build: &str, github_api_url: &str, asset_name: Option<&str>) -> bool {
+    let dir = build_dir(game, build);
     let effective_asset = asset_name.unwrap_or("").to_string();
     let effective_asset = if effective_asset.is_empty() {
         canonical_exe_name(game)
@@ -86,7 +214,7 @@ pub fn needs_update(game: &str, github_api_url: &str, asset_name: Option<&str>) 
 
     if archive::is_archive(&effective_asset) {
         // ── Archive path: version-tag comparison ─────────────────────────────
-        let sidecar_path = game_dir(game).join(".installed.json");
+        let sidecar_path = dir.join(".installed.json");
         if !sidecar_path.exists() {
             return true;
         }
@@ -103,7 +231,7 @@ pub fn needs_update(game: &str, github_api_url: &str, asset_name: Option<&str>) 
     }
 
     // ── Legacy path: SHA256 comparison ───────────────────────────────────────
-    let exe_path = game_dir(game).join(canonical_exe_name(game));
+    let exe_path = dir.join(canonical_exe_name(game));
     if !exe_path.exists() {
         return true;
     }
@@ -140,7 +268,10 @@ pub fn update(
     packages_json: Option<serde_json::Value>,
     state: Arc<AppState>,
 ) {
-    let dir = game_dir(game);
+    // Each release tag gets its own build directory so switching versions
+    // never overwrites a sibling install — the version tag IS the build key.
+    let version = version_tag.unwrap_or("").to_string();
+    let dir = build_dir(game, &version);
     let _ = std::fs::create_dir_all(&dir);
 
     // Normalise release URL: ensure trailing slash.
@@ -157,7 +288,6 @@ pub fn update(
         effective_asset
     };
 
-    let version = version_tag.unwrap_or("").to_string();
     let is_archive = archive::is_archive(&effective_asset);
 
     // Local destination for the downloaded file.
@@ -273,8 +403,8 @@ pub fn update(
 
 // ── Package management ────────────────────────────────────────────────────────
 
-pub fn install_package(game: &str, prefix: &str, zip_asset: &str, state: Arc<AppState>) {
-    let dir = game_dir(game);
+pub fn install_package(game: &str, build: &str, prefix: &str, zip_asset: &str, state: Arc<AppState>) {
+    let dir = build_dir(game, build);
     let _ = std::fs::create_dir_all(&dir);
 
     let base = if prefix.ends_with('/') {
@@ -304,16 +434,16 @@ pub fn install_package(game: &str, prefix: &str, zip_asset: &str, state: Arc<App
     state.finish_download();
 }
 
-pub fn is_package_installed(game: &str, zip_asset: &str) -> bool {
-    let sidecar = game_dir(game).join(".installed_packages.json");
+pub fn is_package_installed(game: &str, build: &str, zip_asset: &str) -> bool {
+    let sidecar = build_dir(game, build).join(".installed_packages.json");
     let Ok(contents) = std::fs::read_to_string(&sidecar) else { return false };
     contents.contains(&format!("\"{}\"", zip_asset))
 }
 
 // ── Play ──────────────────────────────────────────────────────────────────────
 
-pub fn play(game: &str, cvar_args: &str, custom_exe: &str, set_data_root: bool) {
-    let dir = game_dir(game);
+pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data_root: bool) {
+    let dir = build_dir(game, build);
 
     let exe_path: PathBuf = if !custom_exe.is_empty() {
         dir.join(custom_exe)
@@ -338,9 +468,10 @@ pub fn play(game: &str, cvar_args: &str, custom_exe: &str, set_data_root: bool) 
     let mut args: Vec<String> = vec![format!("--user_language={}", language)];
 
     if set_data_root {
+        // ISO data lives at the shared game root, not inside the build dir.
         args.push(format!(
             "--game_data_root={}",
-            dir.join("assets").to_string_lossy()
+            game_root(game).join("assets").to_string_lossy()
         ));
     }
 
