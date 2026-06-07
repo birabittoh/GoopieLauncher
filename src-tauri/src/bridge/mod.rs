@@ -498,7 +498,11 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
                 let url = if offline {
                     offline_site::offline_site_url().to_string()
                 } else {
-                    crate::REMOTE_URL.to_string()
+                    // Mirror `resolve_url()`'s dev-override priority — otherwise
+                    // toggling to "online" while running with `--local`/`--url`/
+                    // `GOOPIE_URL` would ignore the override and jump to the
+                    // production site instead of the dev URL.
+                    crate::url_override().unwrap_or_else(|| crate::REMOTE_URL.to_string())
                 };
                 if let Ok(parsed) = url.parse() {
                     let _ = window.navigate(parsed);

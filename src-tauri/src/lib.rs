@@ -22,7 +22,12 @@ pub const REMOTE_URL: &str = "https://goopie.xyz";
 
 /// An explicit `--url`/`--local`/`GOOPIE_URL` override, if any. These are dev
 /// escape hatches and bypass offline-mode resolution entirely.
-fn url_override() -> Option<String> {
+///
+/// `pub(crate)` so the `setOfflineMode` bridge handler can mirror this
+/// priority when navigating live — otherwise toggling to "online" while
+/// running with `--local`/`--url`/`GOOPIE_URL` would ignore the override and
+/// jump to the production site instead of the dev URL.
+pub(crate) fn url_override() -> Option<String> {
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
     while i < args.len() {
