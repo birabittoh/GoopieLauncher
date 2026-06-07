@@ -442,7 +442,7 @@ pub fn is_package_installed(game: &str, build: &str, zip_asset: &str) -> bool {
 
 // ── Play ──────────────────────────────────────────────────────────────────────
 
-pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data_root: bool) {
+pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data_root: bool) -> Option<std::process::Child> {
     let dir = build_dir(game, build);
 
     let exe_path: PathBuf = if !custom_exe.is_empty() {
@@ -455,7 +455,7 @@ pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data
 
     if !exe_path.exists() {
         eprintln!("[games] Play: executable not found: {}", exe_path.display());
-        return;
+        return None;
     }
 
     #[cfg(unix)]
@@ -494,11 +494,14 @@ pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data
     cmd.current_dir(&dir);
 
     match cmd.spawn() {
-        Ok(_child) => {
-            // Let it run independently; we don't wait on it.
+        Ok(child) => {
             eprintln!("[games] Process spawned successfully");
+            Some(child)
         }
-        Err(e) => eprintln!("[games] Failed to spawn process: {}", e),
+        Err(e) => {
+            eprintln!("[games] Failed to spawn process: {}", e);
+            None
+        }
     }
 }
 
