@@ -7,7 +7,7 @@
     "frontendDist": "../dist",
     "devUrl": "https://goopie.xyz",
     "beforeDevCommand": "",
-    "beforeBuildCommand": "../scripts/build-offline-site.sh"
+    "beforeBuildCommand": "bash ./scripts/build-offline-site.sh"
   },
   "app": {
     "windows": [],
