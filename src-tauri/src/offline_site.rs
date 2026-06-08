@@ -68,15 +68,6 @@ fn content_type_for(path: &str) -> &'static str {
     }
 }
 
-/// The effective offline mode for the *current* launch (mirrors the startup
-/// mode-resolution in `lib.rs::resolve_url`): if the user has explicitly
-/// enabled offline mode, that's honored unconditionally — no probe. Otherwise
-/// the user prefers online, so connectivity is probed live and the result is
-/// a transient fallback only (never written back to the persisted preference).
-pub fn is_offline_mode() -> bool {
-    crate::config::get_offline_mode_preference() || !probe_connectivity()
-}
-
 /// Probe whether `https://goopie.xyz` is reachable, with a short timeout so
 /// startup doesn't hang when there's no connectivity.
 pub fn probe_connectivity() -> bool {

@@ -485,12 +485,24 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
         // ── Offline mode ──────────────────────────────────────────────────────
         // `isOfflineMode` reflects the *effective* mode for this launch: the
         // user's explicit choice if they've enabled offline mode (honored
-        // unconditionally), otherwise a live probe (they prefer online, so
-        // unreachability is a transient fallback, never persisted).
+        // unconditionally), otherwise the *cached* connectivity flag (refreshed
+        // every 20s by spawn_connectivity_monitor, see AppState::goopie_reachable)
+        // — they prefer online, so unreachability is a transient fallback, never
+        // persisted. We deliberately do NOT call `probe_connectivity()` here: this
+        // bridge call is synchronous (blocking XHR, see bridge/shim.js) and is
+        // invoked from React render paths (e.g. Sidebar, on a 1.5s timer and on
+        // every navigation) — a multi-second live probe on every call would freeze
+        // the page's main thread during scroll/navigation. The one-shot startup
+        // mode resolution in `lib.rs::resolve_url` is the only place that still
+        // wants (and can afford) a live probe, and calls `probe_connectivity()`
+        // directly.
         // `setOfflineMode` persists the user's explicit choice (survives
         // restarts, see config::set_offline_mode_preference) and immediately
         // navigates the window so the toggle takes effect without relaunching.
-        "isOfflineMode" => json!(offline_site::is_offline_mode()),
+        "isOfflineMode" => json!(
+            config::get_offline_mode_preference()
+                || !state.goopie_reachable.load(Ordering::Relaxed)
+        ),
         // Cached, instantly-readable connectivity status (see AppState::goopie_reachable) —
         // lets the website grey out "switch to online mode" while goopie.xyz is unreachable,
         // without blocking the UI thread on a multi-second probe for every check.
