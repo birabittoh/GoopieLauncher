@@ -4,6 +4,7 @@
 import argparse
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -71,6 +72,25 @@ def write_version(new: str) -> None:
     path.write_text(json.dumps(data, indent=2) + "\n")
 
 
+def confirm(prompt: str) -> bool:
+    reply = input(f"{prompt} [y/N] ").strip().lower()
+    return reply in ("y", "yes")
+
+
+def run(*cmd: str) -> None:
+    subprocess.run(cmd, cwd=ROOT, check=True)
+
+
+def publish(new: str) -> None:
+    tag = f"v{new}"
+    run("git", "add", *(str(p) for p in FILES.values()))
+    run("git", "commit", "-m", f"Bump version to {new}")
+    run("git", "tag", tag)
+    run("git", "push")
+    run("git", "push", "origin", tag)
+    print(f"Pushed commit and tag {tag} — release workflow should trigger shortly")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -92,8 +112,14 @@ def main() -> None:
         current = unique.pop()
 
     new = bump(current, args.part)
+
+    if not confirm(f"Bump version {current} → {new} and publish release {new}?"):
+        print("Aborted — no changes made")
+        return
+
     write_version(new)
     print(f"{current} → {new}  (bumped {args.part})")
+    publish(new)
 
 
 if __name__ == "__main__":
