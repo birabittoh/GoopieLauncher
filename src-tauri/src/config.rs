@@ -134,6 +134,48 @@ pub fn set_offline_mode_preference(offline: bool) {
     }
 }
 
+// ── Launcher-update check throttle ────────────────────────────────────────────
+
+/// Unix timestamp (seconds) of the last time the launcher checked
+/// `GOOPIE_RELEASES_API` for a newer release, or `0` if it never has.
+///
+/// Persisted across restarts so that re-opening the launcher repeatedly in a
+/// short span doesn't fire a fresh GitHub API request every time — see
+/// `launcher::spawn_update_monitor`, which only checks once the configured
+/// interval has actually elapsed since this timestamp.
+pub fn get_last_update_check() -> u64 {
+    #[cfg(windows)]
+    {
+        use winreg::{enums::*, RegKey};
+        RegKey::predef(HKEY_CURRENT_USER)
+            .open_subkey("Software\\GoopieLauncher")
+            .ok()
+            .and_then(|key| key.get_value::<String, _>("LastUpdateCheck").ok())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0)
+    }
+    #[cfg(not(windows))]
+    {
+        ini_read("LastUpdateCheck", "0").parse().unwrap_or(0)
+    }
+}
+
+pub fn set_last_update_check(timestamp: u64) {
+    #[cfg(windows)]
+    {
+        use winreg::{enums::*, RegKey};
+        if let Ok((key, _)) = RegKey::predef(HKEY_CURRENT_USER)
+            .create_subkey("Software\\GoopieLauncher")
+        {
+            let _ = key.set_value("LastUpdateCheck", &timestamp.to_string());
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        ini_write("LastUpdateCheck", &timestamp.to_string());
+    }
+}
+
 // ── INI helpers (non-Windows) ─────────────────────────────────────────────────
 
 #[cfg(not(windows))]

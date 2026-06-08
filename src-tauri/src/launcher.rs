@@ -1,24 +1,37 @@
 use std::sync::{atomic::Ordering, Arc};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::{bridge::AppState, download, games};
+use crate::{bridge::AppState, config, download, games};
 
 // ── Periodic update check ─────────────────────────────────────────────────────
 
-/// How often to re-check for a new launcher release once the app is running.
-const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(2 * 60 * 60);
+/// How often to re-check for a new launcher release.
+const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
+
+fn unix_now() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
 
 /// Spawns a background thread that checks `GOOPIE_RELEASES_API` for a newer
-/// launcher release — once immediately at startup, then every two hours —
-/// caching the result in `AppState` so the (synchronous) `CheckForLauncherUpdate`
-/// bridge call never blocks on a GitHub API request (mirrors
-/// `offline_site::spawn_connectivity_monitor`).
+/// launcher release every hour, caching the result in `AppState` so the
+/// (synchronous) `CheckForLauncherUpdate` bridge call never blocks on a
+/// GitHub API request (mirrors `offline_site::spawn_connectivity_monitor`).
+///
+/// The timestamp of the last check is persisted (`config::get/set_last_update_check`)
+/// so that the interval is enforced *across restarts* too — opening the
+/// launcher repeatedly within an hour reuses the existing cached result
+/// instead of firing a fresh request each time.
 ///
 /// This never applies an update on its own — it only refreshes the cache that
 /// drives the "update available" icon; the user must explicitly opt in via
 /// `SelfUpdateLauncher`.
 pub fn spawn_update_monitor(state: Arc<AppState>) {
     std::thread::spawn(move || loop {
+        let elapsed = unix_now().saturating_sub(config::get_last_update_check());
+        let interval_secs = UPDATE_CHECK_INTERVAL.as_secs();
+        if elapsed < interval_secs {
+            std::thread::sleep(Duration::from_secs(interval_secs - elapsed));
+        }
         check_for_update(&state);
         std::thread::sleep(UPDATE_CHECK_INTERVAL);
     });
@@ -28,6 +41,8 @@ pub fn spawn_update_monitor(state: Arc<AppState>) {
 /// the previous cached values untouched on a fetch error (transient network
 /// hiccups shouldn't flip "update available" back off).
 fn check_for_update(state: &Arc<AppState>) {
+    config::set_last_update_check(unix_now());
+
     let api_url = env!("GOOPIE_RELEASES_API");
     let body = match download::fetch_to_string(api_url) {
         Ok(b) => b,

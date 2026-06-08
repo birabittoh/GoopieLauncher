@@ -120,9 +120,11 @@ pub fn run() {
             // without blocking the (synchronous) bridge on a multi-second probe.
             offline_site::spawn_connectivity_monitor(Arc::clone(&state_for_setup));
 
-            // Keeps AppState::update_available fresh (checked at startup, then
-            // every 2h) so the website can show an "update available" prompt
-            // without ever blocking the bridge thread on a GitHub API call.
+            // Keeps AppState::update_available fresh (checked roughly every
+            // hour — throttled across restarts via config::*_last_update_check
+            // so re-opening the launcher repeatedly doesn't burst requests) so
+            // the website can show an "update available" prompt without ever
+            // blocking the bridge thread on a GitHub API call.
             // This only refreshes the cache — applying an update is always an
             // explicit user action (`SelfUpdateLauncher`).
             launcher::spawn_update_monitor(Arc::clone(&state_for_setup));
