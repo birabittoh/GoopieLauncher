@@ -60,6 +60,7 @@
   window.Install         = function (g)                { return call('Install', [g]); };
   window.Uninstall       = function (g, b)             { return call('Uninstall', [g, b]); };
   window.UninstallAll    = function (g)                { return call('UninstallAll', [g]); };
+  window.RemoveAssets    = function (g)                { return call('RemoveAssets', [g]); };
   window.Update          = function (g, u, a, v, p)    { return call('Update', [g, u, a, v, p]); };
   window.NeedsUpdate     = function (g, b, u, a)       { return call('NeedsUpdate', [g, b, u, a]); };
   window.Play            = function (g, b, c, e, r)    { return call('Play', [g, b, c, e, r]); };

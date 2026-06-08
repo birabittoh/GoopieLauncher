@@ -206,6 +206,21 @@ pub fn uninstall_all(game: &str) {
     eprintln!("[games] Uninstalled all builds of {} (saves/assets preserved)", game);
 }
 
+/// Remove the extracted ISO/asset data for a game (`assets/`), leaving
+/// `saves/` and any installed builds untouched. Lets the user reclaim the disk
+/// space an extracted ISO takes up without uninstalling the game itself.
+pub fn remove_assets(game: &str) {
+    let dir = game_root(game).join("assets");
+    if !dir.exists() {
+        return;
+    }
+    if let Err(e) = std::fs::remove_dir_all(&dir) {
+        eprintln!("[games] Failed to remove assets for {}: {}", game, e);
+        return;
+    }
+    eprintln!("[games] Removed assets for {} (saves/builds preserved)", game);
+}
+
 // ── NeedsUpdate ──────────────────────────────────────────────────────────────
 
 /// Returns `true` if the installed version is out of date (or not installed).

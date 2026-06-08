@@ -335,6 +335,10 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
             games::uninstall_all(&str_arg(&args, 0));
             Value::Null
         }
+        "RemoveAssets" => {
+            games::remove_assets(&str_arg(&args, 0));
+            Value::Null
+        }
         "Update" => {
             let game_name  = str_arg(&args, 0);
             let release_url = str_arg(&args, 1);
