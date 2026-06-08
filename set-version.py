@@ -81,6 +81,22 @@ def run(*cmd: str) -> None:
     subprocess.run(cmd, cwd=ROOT, check=True)
 
 
+def git_author() -> str:
+    name = subprocess.run(
+        ("git", "config", "user.name"),
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    email = subprocess.run(
+        ("git", "config", "user.email"),
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    return f"{name} <{email}>"
+
+
 def publish(new: str) -> None:
     tag = f"v{new}"
     run("git", "add", *(str(p) for p in FILES.values()))
@@ -113,7 +129,11 @@ def main() -> None:
 
     new = bump(current, args.part)
 
-    if not confirm(f"Bump version {current} → {new} and publish release {new}?"):
+    author = git_author()
+    if not confirm(
+        f"Bump version {current} → {new} and publish release {new} "
+        f"as {author}?"
+    ):
         print("Aborted — no changes made")
         return
 
