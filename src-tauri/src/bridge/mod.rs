@@ -20,7 +20,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use crate::{config, download, games, iso, launcher, offline_site, paths, platform, saves, vehicles};
+use crate::{config, games, iso, launcher, offline_site, paths, platform, saves, vehicles};
 
 // ── Shared application state ─────────────────────────────────────────────────
 
@@ -76,6 +76,16 @@ pub struct AppState {
     /// can't run on demand without freezing the UI — the website polls this
     /// instead to grey out "switch to online mode" while the site is unreachable.
     pub goopie_reachable: AtomicBool,
+    /// Whether the last launcher-update check found a newer release than ours.
+    /// Refreshed by `launcher::spawn_update_monitor` (startup, then every 2h).
+    /// Bridge calls are synchronous, so `CheckForLauncherUpdate` reads this
+    /// cache instead of hitting the GitHub API on demand.
+    pub update_available: AtomicBool,
+    /// Latest release tag seen by the update monitor (raw, e.g. "v1.2.0").
+    pub latest_version: Mutex<String>,
+    /// Whether the update monitor has completed at least one check, so the
+    /// website can tell "checked, no update" apart from "hasn't checked yet".
+    pub update_checked: AtomicBool,
 }
 
 impl AppState {
@@ -91,6 +101,9 @@ impl AppState {
             next_session_id: AtomicU64::new(1),
             window: Mutex::new(None),
             goopie_reachable: AtomicBool::new(true),
+            update_available: AtomicBool::new(false),
+            latest_version: Mutex::new(String::new()),
+            update_checked: AtomicBool::new(false),
         }
     }
 
@@ -271,21 +284,15 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
         "getVersion"   => json!(env!("CARGO_PKG_VERSION")),
 
         "CheckForLauncherUpdate" => {
-            let api_url = env!("GOOPIE_RELEASES_API");
-            match download::fetch_to_string(api_url) {
-                Ok(body) => {
-                    let remote_tag = games::json_extract_str(&body, "tag_name");
-                    let current = env!("CARGO_PKG_VERSION");
-                    let remote_clean = remote_tag.trim_start_matches('v');
-                    let has_update = !remote_clean.is_empty() && remote_clean != current;
-                    json!({
-                        "hasUpdate": has_update,
-                        "latestVersion": remote_tag,
-                        "current": current,
-                    })
-                }
-                Err(_) => Value::Null,
-            }
+            // Instant read of the cache kept fresh by `launcher::spawn_update_monitor`
+            // (checked at startup, then every 2h) — never blocks the bridge thread
+            // on a GitHub API call (see commit 3b39268 for why that matters).
+            json!({
+                "hasUpdate": state.update_available.load(Ordering::Relaxed),
+                "latestVersion": state.latest_version.lock().unwrap().clone(),
+                "current": env!("CARGO_PKG_VERSION"),
+                "checked": state.update_checked.load(Ordering::Relaxed),
+            })
         }
 
         "SelfUpdateLauncher" => {

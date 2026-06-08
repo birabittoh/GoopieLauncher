@@ -120,6 +120,13 @@ pub fn run() {
             // without blocking the (synchronous) bridge on a multi-second probe.
             offline_site::spawn_connectivity_monitor(Arc::clone(&state_for_setup));
 
+            // Keeps AppState::update_available fresh (checked at startup, then
+            // every 2h) so the website can show an "update available" prompt
+            // without ever blocking the bridge thread on a GitHub API call.
+            // This only refreshes the cache — applying an update is always an
+            // explicit user action (`SelfUpdateLauncher`).
+            launcher::spawn_update_monitor(Arc::clone(&state_for_setup));
+
             Ok(())
         })
         // No tauri::command handlers — all native calls go through the bridge scheme.
