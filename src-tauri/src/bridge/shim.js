@@ -41,6 +41,13 @@
   window.GetArch         = function ()    { return call('GetArch', []); };
   window.getVersion      = function ()    { return call('getVersion', []); };
 
+  // ── Launcher self-update ─────────────────────────────────────────────────────
+  // `CheckForLauncherUpdate` is a cheap synchronous read of the cache kept
+  // fresh by `launcher::spawn_update_monitor`; `SelfUpdateLauncher` kicks off
+  // the download/apply (progress polled via getDownloadProgress/-String above).
+  window.CheckForLauncherUpdate = function ()  { return call('CheckForLauncherUpdate', []); };
+  window.SelfUpdateLauncher     = function ()  { return call('SelfUpdateLauncher', []); };
+
   // ── Config / paths ───────────────────────────────────────────────────────────
   window.GetGamesPath    = function ()    { return call('GetGamesPath', []); };
   window.SetGamesPath    = function ()    { return call('SetGamesPath', []); };
