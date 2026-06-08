@@ -71,7 +71,8 @@ jobs:
       # ── Tauri build ────────────────────────────────────────────────────────
       - name: Build (Linux)
         if: inputs.platform == 'linux'
-        run: cargo tauri build --bundles deb,appimage
+        # .deb is intentionally not built — see "Stage/Upload .deb" below for why.
+        run: cargo tauri build --bundles appimage
         env:
           VERSION: ${{ inputs.version }}
           GOOPIE_OAUTH_CLIENT_ID: ${{ secrets.GOOPIE_OAUTH_CLIENT_ID }}
@@ -93,7 +94,10 @@ jobs:
         run: |
           mkdir -p staged
           BASE="Goopie-Launcher-${{ inputs.version }}-linux-${{ inputs.arch }}"
-          cp src-tauri/target/release/bundle/deb/*.deb       "staged/${BASE}.deb"
+          # .deb is not staged — the launcher can only self-update a single
+          # portable executable/AppImage, and a dpkg-managed install can't be
+          # replaced that way (root-owned path + package database).
+          # cp src-tauri/target/release/bundle/deb/*.deb       "staged/${BASE}.deb"
           cp src-tauri/target/release/bundle/appimage/*.AppImage "staged/${BASE}.AppImage"
 
       - name: Stage artifacts (Windows)
@@ -110,12 +114,13 @@ jobs:
           Copy-Item $nsis.FullName "staged/$base-setup.exe"
 
       # ── Artifact upload (one artifact per bundle type) ─────────────────────
-      - name: Upload .deb
-        if: inputs.platform == 'linux'
-        uses: actions/upload-artifact@v4
-        with:
-          name: Goopie-Launcher-${{ inputs.version }}-linux-${{ inputs.arch }}-deb
-          path: staged/*.deb
+      # .deb is no longer built/published — see "Stage artifacts (Linux)" above.
+      # - name: Upload .deb
+      #   if: inputs.platform == 'linux'
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: Goopie-Launcher-${{ inputs.version }}-linux-${{ inputs.arch }}-deb
+      #     path: staged/*.deb
 
       - name: Upload .AppImage
         if: inputs.platform == 'linux'

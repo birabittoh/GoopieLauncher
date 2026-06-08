@@ -45,7 +45,6 @@ jobs:
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
-            artifacts/**/*.deb
             artifacts/**/*.AppImage
             artifacts/**/*.msi
             artifacts/**/*.exe
