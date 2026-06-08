@@ -142,6 +142,26 @@ fn is_target_asset(name: &str) -> bool {
     name.ends_with(".AppImage")
 }
 
+// ── Replaceable executable path ───────────────────────────────────────────────
+
+/// The on-disk file to replace on self-update.
+///
+/// `std::env::current_exe()` is *not* what we want when running as an
+/// `.AppImage`: the AppImage runtime mounts the bundle (read-only squashfs,
+/// typically under `/tmp/.mount_*`) and execs the binary from inside that
+/// mount, so `current_exe()` resolves to a read-only path — staging a download
+/// next to it fails with `ReadOnlyFilesystem`. AppImage runtimes export
+/// `$APPIMAGE` with the real, writable path to the `.AppImage` file itself, so
+/// prefer that; fall back to `current_exe()` for a plain portable binary (e.g.
+/// during development).
+#[cfg(not(windows))]
+fn replaceable_exe_path() -> std::io::Result<std::path::PathBuf> {
+    if let Ok(appimage) = std::env::var("APPIMAGE") {
+        return Ok(std::path::PathBuf::from(appimage));
+    }
+    std::env::current_exe()
+}
+
 // ── Staging path ──────────────────────────────────────────────────────────────
 
 #[cfg(windows)]
@@ -151,8 +171,9 @@ fn staging_path() -> std::path::PathBuf {
 
 #[cfg(not(windows))]
 fn staging_path() -> std::path::PathBuf {
-    // Same directory as the current exe so rename stays on the same filesystem.
-    let current = std::env::current_exe().unwrap_or_default();
+    // Same directory as the replaceable file so the final rename stays on the
+    // same filesystem (see `replaceable_exe_path` for why it's not current_exe).
+    let current = replaceable_exe_path().unwrap_or_default();
     current.parent().unwrap_or(std::path::Path::new("."))
         .join("goopie-launcher-update.AppImage")
 }
@@ -163,20 +184,37 @@ fn staging_path() -> std::path::PathBuf {
 fn apply_update(staging: &std::path::Path) -> std::io::Result<()> {
     let current_exe = std::env::current_exe()?;
 
-    let bat = std::env::temp_dir().join("goopie-update.bat");
-    let contents = format!(
-        "@echo off\r\n\
-         ping -n 3 127.0.0.1 > nul\r\n\
-         copy /y \"{src}\" \"{dst}\"\r\n\
-         start \"\" \"{dst}\"\r\n\
-         del \"%~f0\"\r\n",
-        src = staging.display(),
-        dst = current_exe.display(),
-    );
-    std::fs::write(&bat, contents)?;
+    // Quote a path for PowerShell single-quoted strings.
+    let ps_quote = |p: &std::path::Path| p.display().to_string().replace('\'', "''");
 
-    std::process::Command::new("cmd")
-        .args(["/C", "start", "/B", "/MIN", bat.to_str().unwrap_or("")])
+    // Forward args (e.g. --local) to the relaunched process.
+    let args_ps = std::env::args()
+        .skip(1)
+        .map(|a| format!("'{}'", a.replace('\'', "''")))
+        .collect::<Vec<_>>()
+        .join(",");
+    let start_args = if args_ps.is_empty() {
+        String::new()
+    } else {
+        format!(" -ArgumentList @({})", args_ps)
+    };
+
+    // Use PowerShell with a hidden window so no CMD console appears.
+    // The copy is best-effort: NSIS installs to Program Files (protected) will
+    // fail the copy but still relaunch the existing exe rather than silently dying.
+    let ps = format!(
+        "Start-Sleep -Milliseconds 1500; \
+         try {{ Copy-Item -Force '{src}' '{dst}'; \
+                Remove-Item -Force '{src}' -ErrorAction SilentlyContinue \
+         }} catch {{}}; \
+         Start-Process -FilePath '{dst}'{args}",
+        src = ps_quote(staging),
+        dst = ps_quote(&current_exe),
+        args = start_args,
+    );
+
+    std::process::Command::new("powershell")
+        .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &ps])
         .spawn()?;
 
     std::process::exit(0);
@@ -186,7 +224,7 @@ fn apply_update(staging: &std::path::Path) -> std::io::Result<()> {
 fn apply_update(staging: &std::path::Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
-    let current_exe = std::env::current_exe()?;
+    let current_exe = replaceable_exe_path()?;
     let tmp = current_exe.with_extension("new");
 
     std::fs::copy(staging, &tmp)?;
@@ -194,6 +232,8 @@ fn apply_update(staging: &std::path::Path) -> std::io::Result<()> {
     std::fs::rename(&tmp, &current_exe)?;
     std::fs::remove_file(staging).ok();
 
-    std::process::Command::new(&current_exe).spawn()?;
+    // Forward args (e.g. --local) to the relaunched process.
+    let args: Vec<_> = std::env::args().skip(1).collect();
+    std::process::Command::new(&current_exe).args(&args).spawn()?;
     std::process::exit(0);
 }
