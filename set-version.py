@@ -13,8 +13,16 @@ ROOT = Path(__file__).parent
 FILES = {
     "package.json": ROOT / "package.json",
     "Cargo.toml": ROOT / "src-tauri" / "Cargo.toml",
+    "Cargo.lock": ROOT / "src-tauri" / "Cargo.lock",
     "tauri.conf.json": ROOT / "src-tauri" / "tauri.conf.json",
 }
+
+# Matches the goopie-launcher package entry in Cargo.lock:
+#   name = "goopie-launcher"
+#   version = "X.Y.Z"
+CARGO_LOCK_ENTRY_RE = re.compile(
+    r'(name = "goopie-launcher"\nversion = )"([^"]+)"'
+)
 
 
 def read_versions() -> dict[str, str]:
@@ -28,6 +36,12 @@ def read_versions() -> dict[str, str]:
     if not m:
         sys.exit("Could not find version in Cargo.toml")
     versions["Cargo.toml"] = m.group(1)
+
+    raw = (FILES["Cargo.lock"]).read_text()
+    m = CARGO_LOCK_ENTRY_RE.search(raw)
+    if not m:
+        sys.exit("Could not find goopie-launcher entry in Cargo.lock")
+    versions["Cargo.lock"] = m.group(2)
 
     raw = (FILES["tauri.conf.json"]).read_text()
     versions["tauri.conf.json"] = json.loads(raw)["version"]
@@ -63,6 +77,14 @@ def write_version(new: str) -> None:
         count=1,
         flags=re.MULTILINE,
     )
+    path.write_text(content)
+
+    # Cargo.lock — replace only the goopie-launcher package's own version entry
+    # (other crates' "version" lines must stay untouched).
+    path = FILES["Cargo.lock"]
+    content, n = CARGO_LOCK_ENTRY_RE.subn(rf'\g<1>"{new}"', path.read_text(), count=1)
+    if n != 1:
+        sys.exit("Could not find goopie-launcher entry in Cargo.lock")
     path.write_text(content)
 
     # tauri.conf.json
