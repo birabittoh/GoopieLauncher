@@ -176,6 +176,45 @@ pub fn set_last_update_check(timestamp: u64) {
     }
 }
 
+/// The `tag_name` returned by `GOOPIE_RELEASES_API` on the last successful
+/// check, or an empty string if there isn't one yet.
+///
+/// Persisted alongside `LastUpdateCheck` so that a restart within the throttle
+/// window can immediately surface the previously-known result instead of
+/// leaving `AppState`'s (in-memory, restart-reset) cache empty until the next
+/// live check is actually due — see `launcher::spawn_update_monitor`.
+pub fn get_last_known_release_tag() -> String {
+    #[cfg(windows)]
+    {
+        use winreg::{enums::*, RegKey};
+        RegKey::predef(HKEY_CURRENT_USER)
+            .open_subkey("Software\\GoopieLauncher")
+            .ok()
+            .and_then(|key| key.get_value::<String, _>("LastKnownReleaseTag").ok())
+            .unwrap_or_default()
+    }
+    #[cfg(not(windows))]
+    {
+        ini_read("LastKnownReleaseTag", "")
+    }
+}
+
+pub fn set_last_known_release_tag(tag: &str) {
+    #[cfg(windows)]
+    {
+        use winreg::{enums::*, RegKey};
+        if let Ok((key, _)) = RegKey::predef(HKEY_CURRENT_USER)
+            .create_subkey("Software\\GoopieLauncher")
+        {
+            let _ = key.set_value("LastKnownReleaseTag", &tag);
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        ini_write("LastKnownReleaseTag", tag);
+    }
+}
+
 // ── INI helpers (non-Windows) ─────────────────────────────────────────────────
 
 #[cfg(not(windows))]

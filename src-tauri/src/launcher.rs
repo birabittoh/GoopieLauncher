@@ -26,6 +26,18 @@ fn unix_now() -> u64 {
 /// drives the "update available" icon; the user must explicitly opt in via
 /// `SelfUpdateLauncher`.
 pub fn spawn_update_monitor(state: Arc<AppState>) {
+    // `LastUpdateCheck`/`LastKnownReleaseTag` persist across restarts, but
+    // `AppState`'s cache doesn't — without this, a restart inside the throttle
+    // window below would leave `update_checked` false (and the "update
+    // available" prompt hidden) until the next live check actually runs, up to
+    // an hour later. Re-derive `has_update` against *this* binary's version
+    // rather than trusting a possibly-stale cached verdict (e.g. right after a
+    // self-update, the cached tag may now match `current`).
+    let cached_tag = config::get_last_known_release_tag();
+    if !cached_tag.is_empty() {
+        apply_remote_tag(&state, cached_tag);
+    }
+
     std::thread::spawn(move || loop {
         let elapsed = unix_now().saturating_sub(config::get_last_update_check());
         let interval_secs = UPDATE_CHECK_INTERVAL.as_secs();
@@ -37,19 +49,10 @@ pub fn spawn_update_monitor(state: Arc<AppState>) {
     });
 }
 
-/// Fetch the latest release tag and refresh `AppState`'s update cache. Leaves
-/// the previous cached values untouched on a fetch error (transient network
-/// hiccups shouldn't flip "update available" back off).
-fn check_for_update(state: &Arc<AppState>) {
-    config::set_last_update_check(unix_now());
-
-    let api_url = env!("GOOPIE_RELEASES_API");
-    let body = match download::fetch_to_string(api_url) {
-        Ok(b) => b,
-        Err(e) => { eprintln!("[launcher] update check failed: {e:?}"); return; }
-    };
-
-    let remote_tag = games::json_extract_str(&body, "tag_name");
+/// Compare `remote_tag` against this binary's version and store the verdict in
+/// `AppState` (and, for `check_for_update`'s callers, persist the tag so a
+/// restart within the throttle window can reuse it — see `spawn_update_monitor`).
+fn apply_remote_tag(state: &Arc<AppState>, remote_tag: String) {
     let current = env!("CARGO_PKG_VERSION");
     let remote_clean = remote_tag.trim_start_matches('v');
     let has_update = !remote_clean.is_empty() && remote_clean != current;
@@ -57,6 +60,26 @@ fn check_for_update(state: &Arc<AppState>) {
     state.update_available.store(has_update, Ordering::Relaxed);
     *state.latest_version.lock().unwrap() = remote_tag;
     state.update_checked.store(true, Ordering::Relaxed);
+}
+
+/// Fetch the latest release tag and refresh `AppState`'s update cache. Leaves
+/// the previous cached values untouched on a fetch error (transient network
+/// hiccups shouldn't flip "update available" back off) — and, importantly,
+/// leaves `LastUpdateCheck` untouched too, so a failed check doesn't throttle
+/// the *next* attempt for a full interval (see `spawn_update_monitor`).
+fn check_for_update(state: &Arc<AppState>) {
+    let api_url = env!("GOOPIE_RELEASES_API");
+    let body = match download::fetch_to_string(api_url) {
+        Ok(b) => b,
+        Err(e) => { eprintln!("[launcher] update check failed: {e:?}"); return; }
+    };
+
+    // Only stamp the throttle timestamp on a *successful* check — see doc comment.
+    config::set_last_update_check(unix_now());
+
+    let remote_tag = games::json_extract_str(&body, "tag_name");
+    config::set_last_known_release_tag(&remote_tag);
+    apply_remote_tag(state, remote_tag);
 }
 
 pub fn self_update(state: Arc<AppState>) {
