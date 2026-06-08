@@ -199,17 +199,36 @@ fn apply_update(staging: &std::path::Path) -> std::io::Result<()> {
         format!(" -ArgumentList @({})", args_ps)
     };
 
-    // Use PowerShell with a hidden window so no CMD console appears.
-    // The copy is best-effort: NSIS installs to Program Files (protected) will
-    // fail the copy but still relaunch the existing exe rather than silently dying.
-    let ps = format!(
-        "Start-Sleep -Milliseconds 1500; \
-         try {{ Copy-Item -Force '{src}' '{dst}'; \
-                Remove-Item -Force '{src}' -ErrorAction SilentlyContinue \
-         }} catch {{}}; \
-         Start-Process -FilePath '{dst}'{args}",
+    // Write a tiny ps1 for the elevated fallback: keeps the inline -Command
+    // string short and avoids nested quoting hell.
+    let elevate_script = std::env::temp_dir().join("goopie-elevate.ps1");
+    std::fs::write(&elevate_script, format!(
+        "Copy-Item -Force '{src}' '{dst}'\n\
+         Remove-Item -Force '{src}' -ErrorAction SilentlyContinue\n",
         src = ps_quote(staging),
         dst = ps_quote(&current_exe),
+    ))?;
+
+    // Use PowerShell with a hidden window so no CMD console appears.
+    // Try the copy directly first (works for portable exe in a user-writable
+    // path); if that fails (e.g. NSIS install to Program Files), retry via
+    // -Verb RunAs which triggers a UAC elevation prompt and runs the copy as
+    // admin.  Either way, clean up temp files and relaunch.
+    let ps = format!(
+        "$src='{src}'; $dst='{dst}'; $elev='{elev}'; \
+         Start-Sleep -Milliseconds 1500; \
+         $ok=$false; \
+         try {{ Copy-Item -Force $src $dst; Remove-Item -Force $src -EA 0; $ok=$true }} catch {{}}; \
+         if (-not $ok) {{ \
+             try {{ Start-Process powershell -Verb RunAs -Wait \
+                 -ArgumentList @('-NoProfile','-WindowStyle','Hidden','-File',$elev) \
+             }} catch {{}} \
+         }}; \
+         Remove-Item -Force $elev -EA 0; \
+         Start-Process -FilePath $dst{args}",
+        src = ps_quote(staging),
+        dst = ps_quote(&current_exe),
+        elev = ps_quote(&elevate_script),
         args = start_args,
     );
 
