@@ -3,6 +3,9 @@ src-tauri/target/
 src-tauri/gen/
 .cargo/
 
+# Python
+__pycache__/
+
 # Node
 node_modules/
 dist/
