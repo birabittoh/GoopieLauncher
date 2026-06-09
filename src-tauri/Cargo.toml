@@ -47,6 +47,7 @@ xdvdfs        = { version = "0.8", default-features = false, features = ["std", 
 # Windows registry (config storage on Windows)
 [target.'cfg(windows)'.dependencies]
 winreg        = "0.52"
+junction      = "1"
 
 [dev-dependencies]
 tempfile      = "3"

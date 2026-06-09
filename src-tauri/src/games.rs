@@ -482,6 +482,11 @@ pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data
             "--game_data_root={}",
             game_root(game).join("assets").to_string_lossy()
         ));
+    } else {
+        // Older builds that don't support --game_data_root look for assets
+        // relative to their own directory.  Ensure a junction/symlink exists so
+        // they can still find the shared ISO data without copying it.
+        ensure_assets_link(game, &dir);
     }
 
     if !cvar_args.is_empty() {
@@ -501,6 +506,14 @@ pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data
     let mut cmd = std::process::Command::new(&exe_path);
     cmd.args(&args);
     cmd.current_dir(&dir);
+    // Prevent the game from inheriting the launcher's stdio handles.  In debug
+    // builds the launcher is a console app whose handles are connected to the
+    // terminal; a game that writes to stderr before its window is ready would
+    // block once the pipe buffer fills.  In release builds the handles are NULL
+    // and any write attempt would crash the child.
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::null());
 
     match cmd.spawn() {
         Ok(child) => {
@@ -515,6 +528,71 @@ pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
+
+/// Ensure `<build_dir>/assets` is a junction (Windows) or symlink (Unix)
+/// pointing at `<game_root>/assets`.
+///
+/// This is needed for older builds that do not support `--game_data_root`: they
+/// look for assets relative to their own directory, so linking the shared asset
+/// folder in makes them work without copying data or passing extra flags.
+///
+/// Does nothing if:
+///  - the shared assets directory does not exist yet (game not ISO-installed), or
+///  - `<build_dir>/assets` already exists and already points at the right target.
+fn ensure_assets_link(game: &str, build_dir: &Path) {
+    let target = game_root(game).join("assets");
+    if !target.exists() {
+        return;
+    }
+
+    let link = build_dir.join("assets");
+
+    // Already correct — nothing to do.
+    #[cfg(windows)]
+    if let Ok(meta) = std::fs::symlink_metadata(&link) {
+        use std::os::windows::fs::MetadataExt;
+        // FILE_ATTRIBUTE_REPARSE_POINT (0x400) covers both junctions and symlinks.
+        if meta.file_attributes() & 0x400 != 0 {
+            return;
+        }
+        // It exists but is a real directory — leave it alone.
+        return;
+    }
+    #[cfg(unix)]
+    if link.exists() {
+        return;
+    }
+
+    #[cfg(windows)]
+    {
+        // Use `junction` crate if available; fall back to mklink /J via cmd.
+        if let Err(e) = junction::create(&target, &link) {
+            eprintln!(
+                "[games] Failed to create junction {} -> {}: {}",
+                link.display(), target.display(), e
+            );
+        } else {
+            eprintln!(
+                "[games] Created assets junction: {} -> {}",
+                link.display(), target.display()
+            );
+        }
+    }
+    #[cfg(unix)]
+    {
+        if let Err(e) = std::os::unix::fs::symlink(&target, &link) {
+            eprintln!(
+                "[games] Failed to create symlink {} -> {}: {}",
+                link.display(), target.display(), e
+            );
+        } else {
+            eprintln!(
+                "[games] Created assets symlink: {} -> {}",
+                link.display(), target.display()
+            );
+        }
+    }
+}
 
 /// Platform-canonical executable name for a game (no extension on Linux, .exe on Windows).
 fn canonical_exe_name(game: &str) -> String {
