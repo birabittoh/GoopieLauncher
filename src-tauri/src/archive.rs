@@ -96,11 +96,3 @@ pub fn is_7z(name: &str) -> bool {
 pub fn is_archive(name: &str) -> bool {
     is_zip(name) || is_tar_gz(name) || is_7z(name)
 }
-
-/// Detect if the first two bytes of a file are the gzip magic number `\x1f\x8b`.
-pub fn is_gzip_magic(path: &str) -> bool {
-    use std::io::Read;
-    let Ok(mut f) = std::fs::File::open(path) else { return false };
-    let mut magic = [0u8; 2];
-    f.read_exact(&mut magic).is_ok() && magic == [0x1f, 0x8b]
-}

@@ -376,22 +376,6 @@ pub fn update(
             );
         }
 
-        // Handle tar.gz magic-byte detection for legacy assets.
-        #[cfg(unix)]
-        if archive::is_gzip_magic(&local_path.to_string_lossy()) {
-            eprintln!("[games] Detected tar.gz magic — extracting legacy asset");
-            let archive_path = local_path.with_extension("tar.gz");
-            if std::fs::rename(&local_path, &archive_path).is_ok() {
-                let _ = archive::extract_tar_gz(
-                    &archive_path.to_string_lossy(),
-                    &dir.to_string_lossy(),
-                );
-                let _ = std::fs::remove_file(&archive_path);
-                // Move the extracted binary to the canonical name if needed.
-                relocate_extracted_exe(&dir, game, &local_path);
-            }
-        }
-
         write_sidecar(&sidecar_path, &version, &effective_asset, None);
     }
 
@@ -608,33 +592,6 @@ fn find_main_executable(dir: &Path, game: &str) -> String {
     }
 
     fallback
-}
-
-/// After tar.gz extraction, try to move the executable to the canonical location.
-#[cfg(unix)]
-fn relocate_extracted_exe(dir: &Path, game: &str, canonical: &Path) {
-    if canonical.exists() {
-        return; // already in place
-    }
-    let canonical_name = canonical.file_name().unwrap_or_default().to_string_lossy().into_owned();
-    // (a) bare game name at root
-    let candidate = dir.join(game);
-    if candidate.exists() {
-        let _ = std::fs::rename(&candidate, canonical);
-        return;
-    }
-    // (b) one level deep in a subdirectory
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
-    for entry in entries.flatten() {
-        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) { continue; }
-        for name in [canonical_name.as_str(), game] {
-            let p = entry.path().join(name);
-            if p.exists() {
-                let _ = std::fs::rename(&p, canonical);
-                return;
-            }
-        }
-    }
 }
 
 // ── JSON extraction helpers (avoid serde_json for simple cases) ────────────────
