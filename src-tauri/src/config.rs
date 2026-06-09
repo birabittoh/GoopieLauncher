@@ -215,12 +215,67 @@ pub fn set_last_known_release_tag(tag: &str) {
     }
 }
 
+// ── Auto-apply updates (hidden) ───────────────────────────────────────────────
+
+/// Whether the launcher should apply an available self-update automatically,
+/// *without* the usual explicit user action (the website's `SelfUpdateLauncher`
+/// button). Defaults to `false` — the safe, ask-first behavior.
+///
+/// This is deliberately hidden (no UI today) and stored via the same mechanism
+/// as the other settings. It exists so the launcher can be driven to self-update
+/// unattended (e.g. by the end-to-end test harness, or a future UI toggle): when
+/// it's `true` and a newer release is detected during a check, the launcher
+/// downloads and applies it on its own. See `launcher::maybe_auto_apply`.
+pub fn get_auto_apply_update() -> bool {
+    #[cfg(windows)]
+    {
+        use winreg::{enums::*, RegKey};
+        RegKey::predef(HKEY_CURRENT_USER)
+            .open_subkey("Software\\GoopieLauncher")
+            .ok()
+            .and_then(|key| key.get_value::<u32, _>("AutoApplyUpdate").ok())
+            .map(|v| v != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(windows))]
+    {
+        ini_read("AutoApplyUpdate", "0") == "1"
+    }
+}
+
+pub fn set_auto_apply_update(enabled: bool) {
+    #[cfg(windows)]
+    {
+        use winreg::{enums::*, RegKey};
+        if let Ok((key, _)) = RegKey::predef(HKEY_CURRENT_USER)
+            .create_subkey("Software\\GoopieLauncher")
+        {
+            let _ = key.set_value("AutoApplyUpdate", &(enabled as u32));
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        ini_write("AutoApplyUpdate", if enabled { "1" } else { "0" });
+    }
+}
+
 // ── INI helpers (non-Windows) ─────────────────────────────────────────────────
 
 #[cfg(not(windows))]
 fn ini_read(key: &str, default: &str) -> String {
-    let path = paths::config_file();
-    let Ok(contents) = std::fs::read_to_string(&path) else {
+    ini_read_at(&paths::config_file(), key, default)
+}
+
+#[cfg(not(windows))]
+fn ini_write(key: &str, value: &str) {
+    ini_write_at(&paths::config_file(), key, value);
+}
+
+/// Path-taking core of [`ini_read`], so it can be exercised against a temp file
+/// in tests without touching the real user config.
+#[cfg(not(windows))]
+fn ini_read_at(path: &std::path::Path, key: &str, default: &str) -> String {
+    let Ok(contents) = std::fs::read_to_string(path) else {
         return default.to_string();
     };
     for line in contents.lines() {
@@ -233,12 +288,12 @@ fn ini_read(key: &str, default: &str) -> String {
     default.to_string()
 }
 
+/// Path-taking core of [`ini_write`] (see [`ini_read_at`]).
 #[cfg(not(windows))]
-fn ini_write(key: &str, value: &str) {
-    let path = paths::config_file();
+fn ini_write_at(path: &std::path::Path, key: &str, value: &str) {
     let mut lines: Vec<String> = Vec::new();
     let mut found = false;
-    if let Ok(contents) = std::fs::read_to_string(&path) {
+    if let Ok(contents) = std::fs::read_to_string(path) {
         for line in contents.lines() {
             if let Some(pos) = line.find('=') {
                 if &line[..pos] == key {
@@ -253,5 +308,53 @@ fn ini_write(key: &str, value: &str) {
     if !found {
         lines.push(format!("{}={}", key, value));
     }
-    let _ = std::fs::write(&path, lines.join("\n") + "\n");
+    let _ = std::fs::write(path, lines.join("\n") + "\n");
+}
+
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ini_round_trips_a_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.ini");
+        ini_write_at(&path, "GamesPath", "/games");
+        assert_eq!(ini_read_at(&path, "GamesPath", ""), "/games");
+    }
+
+    #[test]
+    fn ini_read_returns_default_for_missing_key_or_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.ini");
+        // Missing file.
+        assert_eq!(ini_read_at(&path, "Nope", "fallback"), "fallback");
+        // Existing file, missing key.
+        ini_write_at(&path, "GamesPath", "/games");
+        assert_eq!(ini_read_at(&path, "Nope", "fallback"), "fallback");
+    }
+
+    #[test]
+    fn ini_write_updates_in_place_without_duplicating_or_dropping_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.ini");
+        ini_write_at(&path, "GamesPath", "/games");
+        ini_write_at(&path, "UserLanguage", "2");
+        ini_write_at(&path, "GamesPath", "/other"); // update existing
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(contents.matches("GamesPath=").count(), 1);
+        assert_eq!(ini_read_at(&path, "GamesPath", ""), "/other");
+        assert_eq!(ini_read_at(&path, "UserLanguage", ""), "2");
+    }
+
+    #[test]
+    fn auto_apply_update_round_trips_as_0_or_1() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.ini");
+        ini_write_at(&path, "AutoApplyUpdate", "1");
+        assert_eq!(ini_read_at(&path, "AutoApplyUpdate", "0"), "1");
+        ini_write_at(&path, "AutoApplyUpdate", "0");
+        assert_eq!(ini_read_at(&path, "AutoApplyUpdate", "0"), "0");
+    }
 }
