@@ -14,6 +14,8 @@ jobs:
       version: ${{ github.ref_name }}
       platform: linux
       arch: x86_64
+      # Published assets are versionless — the launcher self-updates regardless.
+      versioned_filename: false
 
   build-windows:
     name: Build windows/x86_64
@@ -23,6 +25,7 @@ jobs:
       version: ${{ github.ref_name }}
       platform: windows
       arch: x86_64
+      versioned_filename: false
 
   release:
     name: Create GitHub Release

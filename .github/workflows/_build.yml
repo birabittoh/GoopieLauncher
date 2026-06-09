@@ -15,6 +15,15 @@ on:
         description: "Target architecture: x86_64 or aarch64"
         type: string
         required: true
+      versioned_filename:
+        description: >-
+          Embed the version in staged artifact filenames. CI builds keep it
+          (the short SHA, to tell builds apart); release builds drop it so the
+          published asset names are stable — the launcher self-updates them
+          regardless of the version in the name.
+        type: boolean
+        required: false
+        default: true
     secrets:
       GOOPIE_OAUTH_CLIENT_ID:
         description: "Google Desktop OAuth 2.0 client ID (public; baked into the binary at build time)"
@@ -93,7 +102,12 @@ jobs:
         if: inputs.platform == 'linux'
         run: |
           mkdir -p staged
-          BASE="Goopie-Launcher-${{ inputs.version }}-linux-${{ inputs.arch }}"
+          if [ "${{ inputs.versioned_filename }}" = "true" ]; then
+            BASE="Goopie-Launcher-${{ inputs.version }}-linux-${{ inputs.arch }}"
+          else
+            BASE="Goopie-Launcher-linux-${{ inputs.arch }}"
+          fi
+          echo "ARTIFACT_BASE=$BASE" >> "$GITHUB_ENV"
           # .deb is not staged — the launcher can only self-update a single
           # portable executable/AppImage, and a dpkg-managed install can't be
           # replaced that way (root-owned path + package database).
@@ -105,7 +119,12 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path staged | Out-Null
-          $base = "Goopie-Launcher-${{ inputs.version }}-windows-${{ inputs.arch }}"
+          if ("${{ inputs.versioned_filename }}" -eq "true") {
+            $base = "Goopie-Launcher-${{ inputs.version }}-windows-${{ inputs.arch }}"
+          } else {
+            $base = "Goopie-Launcher-windows-${{ inputs.arch }}"
+          }
+          "ARTIFACT_BASE=$base" | Out-File -FilePath $env:GITHUB_ENV -Append
           $exe  = Get-ChildItem src-tauri/target/release/*.exe | Select-Object -First 1
           $msi  = Get-ChildItem src-tauri/target/release/bundle/msi/*.msi | Select-Object -First 1
           $nsis = Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe | Select-Object -First 1
@@ -148,4 +167,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Goopie-Launcher-${{ inputs.version }}-windows-${{ inputs.arch }}-portable
-          path: staged/Goopie-Launcher-${{ inputs.version }}-windows-${{ inputs.arch }}.exe
+          path: staged/${{ env.ARTIFACT_BASE }}.exe
