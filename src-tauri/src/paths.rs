@@ -8,8 +8,14 @@ use std::path::PathBuf;
 /// - Linux/macOS: `~/.config/GoopieLauncher/config.ini`.
 #[cfg(not(windows))]
 pub fn config_file() -> PathBuf {
-    let base = directories::BaseDirs::new()
-        .map(|d| d.config_dir().join("GoopieLauncher"))
+    // `GOOPIE_CONFIG_DIR` lets the end-to-end test harness redirect config reads
+    // and writes to a temp directory so they never touch the real user config.
+    let base = std::env::var_os("GOOPIE_CONFIG_DIR")
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            directories::BaseDirs::new().map(|d| d.config_dir().join("GoopieLauncher"))
+        })
         .unwrap_or_else(|| PathBuf::from(".config/GoopieLauncher"));
     let _ = std::fs::create_dir_all(&base);
     base.join("config.ini")
