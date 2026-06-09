@@ -114,17 +114,54 @@ fn check_for_update(state: &Arc<AppState>) {
     maybe_auto_apply(state);
 }
 
+/// The gating decision for an unattended auto-apply, factored out so it can be
+/// unit-tested without touching the registry/INI or the network. An update is
+/// applied on its own only when **all three** hold:
+///   - the hidden `AutoApplyUpdate` flag is on,
+///   - a newer release was actually detected, and
+///   - **no game is currently running.**
+///
+/// The last condition is the important one: applying an update calls
+/// `apply_update`, which replaces the binary and `exit(0)`s the launcher. Doing
+/// that mid-session would orphan the game the player launched and tear down the
+/// launcher↔game bridge out from under them. So when a game is running we defer,
+/// even with the flag on — the update is re-attempted the moment the game closes
+/// (see `auto_apply_after_game_exit`, called from the bridge's game monitor).
+fn should_auto_apply(flag_enabled: bool, update_available: bool, game_running: bool) -> bool {
+    flag_enabled && update_available && !game_running
+}
+
+/// Whether a game launched by the launcher is currently being tracked as running.
+fn game_is_running(state: &AppState) -> bool {
+    state.running_game.lock().unwrap().is_some()
+}
+
 /// If the hidden `AutoApplyUpdate` setting is enabled *and* a newer release was
-/// detected (`AppState::update_available`), download and apply it immediately —
-/// no UI interaction. A no-op when the setting is off (the default), preserving
-/// the explicit-`SelfUpdateLauncher`-only behavior.
+/// detected (`AppState::update_available`) *and* no game is running, download and
+/// apply it immediately — no UI interaction. A no-op when the setting is off (the
+/// default), preserving the explicit-`SelfUpdateLauncher`-only behavior; also a
+/// no-op (deferred) while a game is running, so the player's session is never
+/// killed mid-game by an unattended update.
 fn maybe_auto_apply(state: &Arc<AppState>) {
-    if !config::get_auto_apply_update() {
+    let flag = config::get_auto_apply_update();
+    let available = state.update_available.load(Ordering::Relaxed);
+    let game_running = game_is_running(state);
+
+    if flag && available && game_running {
+        eprintln!("[launcher] auto-update deferred until the running game closes");
         return;
     }
-    if state.update_available.load(Ordering::Relaxed) {
+    if should_auto_apply(flag, available, game_running) {
         self_update(Arc::clone(state));
     }
+}
+
+/// Re-evaluate a deferred auto-apply now that the tracked game has exited (see
+/// the game-running guard in `maybe_auto_apply`). Called by the bridge's game
+/// monitor as soon as a game closes; a no-op unless `AutoApplyUpdate` is on and
+/// a newer release is still pending from an earlier check.
+pub(crate) fn auto_apply_after_game_exit(state: &Arc<AppState>) {
+    maybe_auto_apply(state);
 }
 
 /// Headless update entry point used by the `--self-update-check` CLI flag (see
@@ -375,4 +412,61 @@ fn apply_update(staging: &std::path::Path, _new_version: &str) -> std::io::Resul
     let args: Vec<_> = std::env::args().skip(1).collect();
     std::process::Command::new(&current_exe).args(&args).spawn()?;
     std::process::exit(0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_apply_requires_flag_update_and_no_running_game() {
+        // The only combination that applies an update unattended is:
+        // flag on + a newer release available + no game running.
+        assert!(should_auto_apply(true, true, false));
+
+        // Missing either precondition blocks it.
+        assert!(!should_auto_apply(false, true, false)); // flag off
+        assert!(!should_auto_apply(true, false, false)); // nothing newer
+
+        // ...and a running game blocks it even with the flag on and an update
+        // pending — this is the "wait for the game to close before auto-updating"
+        // guarantee: applying mid-session would exit the launcher and orphan the
+        // player's game.
+        assert!(!should_auto_apply(true, true, true));
+        assert!(!should_auto_apply(false, false, true));
+    }
+
+    // Verifies the wiring `maybe_auto_apply` relies on: an `AppState` reports a
+    // game as running exactly while one is tracked, so the guard above actually
+    // fires when the player has a game open. Uses a real throwaway child process
+    // (`sleep`) to stand in for the game; not run on Windows (no `sleep` binary).
+    #[cfg(not(windows))]
+    #[test]
+    fn game_is_running_reflects_tracked_session() {
+        use crate::bridge::RunningGame;
+        use std::time::Instant;
+
+        let state = AppState::new();
+        assert!(!game_is_running(&state), "nothing tracked ⇒ no game running");
+
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn throwaway child");
+        *state.running_game.lock().unwrap() = Some(RunningGame {
+            session_id: 1,
+            game: "test".into(),
+            build: "test".into(),
+            child,
+            started_at: Instant::now(),
+        });
+        assert!(game_is_running(&state), "tracked session ⇒ game running");
+
+        // Don't leave the throwaway child behind.
+        let tracked = state.running_game.lock().unwrap().take();
+        if let Some(mut running) = tracked {
+            let _ = running.child.kill();
+            let _ = running.child.wait();
+        }
+    }
 }

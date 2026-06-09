@@ -163,6 +163,12 @@ fn monitor_running_game(state: Arc<AppState>, session_id: u64) {
         match running.child.try_wait() {
             Ok(Some(_status)) => {
                 *lock = None;
+                drop(lock);
+                // The player just closed the game. If a self-update was deferred
+                // while it was running (hidden `AutoApplyUpdate` flag on + a newer
+                // release already detected), apply it now — see the game-running
+                // guard in `launcher::maybe_auto_apply`. No-op otherwise.
+                launcher::auto_apply_after_game_exit(&state);
                 return;
             }
             Ok(None) => { /* still running */ }
