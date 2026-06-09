@@ -243,6 +243,10 @@ pub fn get_auto_apply_update() -> bool {
     }
 }
 
+/// Setter for `AutoApplyUpdate`. Unused for now — kept as the public API for a
+/// future UI toggle (the value is read by `launcher::maybe_auto_apply`); the
+/// e2e test writes it directly via the registry/INI.
+#[allow(dead_code)]
 pub fn set_auto_apply_update(enabled: bool) {
     #[cfg(windows)]
     {
