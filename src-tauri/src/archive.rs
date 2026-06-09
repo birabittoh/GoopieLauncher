@@ -96,3 +96,130 @@ pub fn is_7z(name: &str) -> bool {
 pub fn is_archive(name: &str) -> bool {
     is_zip(name) || is_tar_gz(name) || is_7z(name)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::path::PathBuf;
+
+    /// One regular file at the root and one nested under a subdirectory, so each
+    /// test exercises both flat entries and directory creation on extract.
+    const ENTRIES: &[(&str, &[u8])] = &[
+        ("game-linux-x64", b"\x7fELF fake executable payload"),
+        ("data/config.toml", b"name = \"goopie\"\n"),
+    ];
+
+    fn build_src_dir() -> tempfile::TempDir {
+        let src = tempfile::tempdir().expect("src tempdir");
+        for (name, data) in ENTRIES {
+            let p = src.path().join(name);
+            if let Some(parent) = p.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&p, data).unwrap();
+        }
+        src
+    }
+
+    fn make_zip(path: &PathBuf) {
+        use zip::write::{SimpleFileOptions, ZipWriter};
+        let f = std::fs::File::create(path).unwrap();
+        let mut zw = ZipWriter::new(f);
+        let opts = SimpleFileOptions::default();
+        for (name, data) in ENTRIES {
+            zw.start_file(*name, opts).unwrap();
+            zw.write_all(data).unwrap();
+        }
+        zw.finish().unwrap();
+    }
+
+    fn make_tar_gz(path: &PathBuf) {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        let f = std::fs::File::create(path).unwrap();
+        let enc = GzEncoder::new(f, Compression::default());
+        let mut builder = tar::Builder::new(enc);
+        for (name, data) in ENTRIES {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder.append_data(&mut header, name, *data).unwrap();
+        }
+        // into_inner() finalizes the tar stream and hands back the gz encoder,
+        // which we then finish() to flush the gzip trailer.
+        builder.into_inner().unwrap().finish().unwrap();
+    }
+
+    fn make_7z(path: &PathBuf) {
+        let src = build_src_dir();
+        sevenz_rust::compress_to_path(src.path(), path).unwrap();
+    }
+
+    /// Extract `archive` and assert every fixture entry came back byte-for-byte,
+    /// including the nested `data/config.toml`.
+    fn assert_round_trip(archive: &PathBuf) {
+        let dest = tempfile::tempdir().expect("dest tempdir");
+        extract_archive(&archive.to_string_lossy(), &dest.path().to_string_lossy())
+            .unwrap_or_else(|e| panic!("extract_archive({}) failed: {e}", archive.display()));
+        for (name, data) in ENTRIES {
+            let out = dest.path().join(name);
+            assert!(out.exists(), "{name} missing after extracting {}", archive.display());
+            assert_eq!(&std::fs::read(&out).unwrap(), data, "{name} contents mismatch");
+        }
+    }
+
+    #[test]
+    fn extract_archive_handles_zip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("game.zip");
+        make_zip(&path);
+        assert_round_trip(&path);
+    }
+
+    #[test]
+    fn extract_archive_handles_tar_gz() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("game.tar.gz");
+        make_tar_gz(&path);
+        assert_round_trip(&path);
+    }
+
+    #[test]
+    fn extract_archive_handles_tgz_extension() {
+        // `.tgz` is an accepted alias for `.tar.gz` in the dispatcher.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("game.tgz");
+        make_tar_gz(&path);
+        assert_round_trip(&path);
+    }
+
+    #[test]
+    fn extract_archive_handles_7z() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("game.7z");
+        make_7z(&path);
+        assert_round_trip(&path);
+    }
+
+    #[test]
+    fn extract_archive_rejects_unsupported_extension() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("game.rar");
+        std::fs::write(&path, b"not really a rar").unwrap();
+        let err = extract_archive(&path.to_string_lossy(), &tmp.path().to_string_lossy())
+            .expect_err("unsupported extension must error");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn is_archive_matches_supported_extensions_case_insensitively() {
+        for name in ["game.zip", "GAME.ZIP", "game.tar.gz", "game.TGZ", "game.7z"] {
+            assert!(is_archive(name), "{name} should be recognized as an archive");
+        }
+        for name in ["game-linux-x64", "game.exe", "game.AppImage", "game.rar"] {
+            assert!(!is_archive(name), "{name} should not be recognized as an archive");
+        }
+    }
+}
