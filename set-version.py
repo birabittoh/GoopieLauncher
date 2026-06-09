@@ -103,6 +103,15 @@ def run(*cmd: str) -> None:
     subprocess.run(cmd, cwd=ROOT, check=True)
 
 
+def run_tests() -> None:
+    """Run the unit + end-to-end test suite, aborting the release on failure."""
+    print("Running tests before release...")
+    try:
+        subprocess.run([sys.executable, str(ROOT / "run_tests.py")], cwd=ROOT, check=True)
+    except subprocess.CalledProcessError:
+        sys.exit("Tests failed — aborting release (no changes made)")
+
+
 def git_author() -> str:
     name = subprocess.run(
         ("git", "config", "user.name"),
@@ -150,6 +159,9 @@ def main() -> None:
         current = unique.pop()
 
     new = bump(current, args.part)
+
+    # Gate the release on a green test suite before prompting / touching files.
+    run_tests()
 
     author = git_author()
     if not confirm(
