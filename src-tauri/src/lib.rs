@@ -72,8 +72,21 @@ fn resolve_url() -> String {
     }
 }
 
+/// Whether the launcher was invoked with `--self-update-check`: a hidden,
+/// headless mode (no window) that runs a single update check, applies it when
+/// `AutoApplyUpdate` is set, and exits. Used by the end-to-end test harness.
+fn self_update_check_requested() -> bool {
+    std::env::args().skip(1).any(|a| a == "--self-update-check")
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Headless self-update check (no GUI): runs the update flow and exits. Must
+    // happen before any Tauri setup so it works without a display.
+    if self_update_check_requested() {
+        launcher::run_self_update_check();
+    }
+
     // Generate a random per-launch token and build the JS init-script before
     // Tauri starts. The custom URI scheme is registered on the Builder so wry
     // marks it as a secure context before the first navigation — preventing any
@@ -125,8 +138,9 @@ pub fn run() {
             // so re-opening the launcher repeatedly doesn't burst requests) so
             // the website can show an "update available" prompt without ever
             // blocking the bridge thread on a GitHub API call.
-            // This only refreshes the cache — applying an update is always an
-            // explicit user action (`SelfUpdateLauncher`).
+            // This only refreshes the cache — applying an update is an explicit
+            // user action (`SelfUpdateLauncher`), unless the hidden
+            // `AutoApplyUpdate` setting is enabled (then checks auto-apply).
             launcher::spawn_update_monitor(Arc::clone(&state_for_setup));
 
             Ok(())

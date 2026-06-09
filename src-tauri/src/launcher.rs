@@ -12,6 +12,29 @@ fn unix_now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
+/// The releases API endpoint to query for the latest launcher version.
+///
+/// Resolved at *runtime* first (the `GOOPIE_RELEASES_API` env var), falling back
+/// to the value baked in at compile time. Two reasons:
+///   - the compile-time value is now `option_env!` (not `env!`), so a plain
+///     `cargo build`/`cargo test` no longer fails when the secret is absent — the
+///     unit tests and the e2e debug build compile without it;
+///   - the e2e test harness can point the launcher at a local mock release server.
+///
+/// The env override is honored only in debug builds (`cfg!(debug_assertions)`),
+/// so shipped release binaries always use the URL baked in at compile time and
+/// can't be redirected by a stray environment variable.
+fn releases_api_url() -> Option<String> {
+    if cfg!(debug_assertions) {
+        if let Ok(url) = std::env::var("GOOPIE_RELEASES_API") {
+            if !url.is_empty() {
+                return Some(url);
+            }
+        }
+    }
+    option_env!("GOOPIE_RELEASES_API").map(|s| s.to_string())
+}
+
 /// Spawns a background thread that checks `GOOPIE_RELEASES_API` for a newer
 /// launcher release every hour, caching the result in `AppState` so the
 /// (synchronous) `CheckForLauncherUpdate` bridge call never blocks on a
@@ -22,9 +45,10 @@ fn unix_now() -> u64 {
 /// launcher repeatedly within an hour reuses the existing cached result
 /// instead of firing a fresh request each time.
 ///
-/// This never applies an update on its own — it only refreshes the cache that
-/// drives the "update available" icon; the user must explicitly opt in via
-/// `SelfUpdateLauncher`.
+/// By default this never applies an update on its own — it only refreshes the
+/// cache that drives the "update available" icon, and the user explicitly opts
+/// in via `SelfUpdateLauncher`. The one exception is the hidden `AutoApplyUpdate`
+/// setting: when enabled, each live check auto-applies via `maybe_auto_apply`.
 pub fn spawn_update_monitor(state: Arc<AppState>) {
     // `LastUpdateCheck`/`LastKnownReleaseTag` persist across restarts, but
     // `AppState`'s cache doesn't — without this, a restart inside the throttle
@@ -68,8 +92,11 @@ fn apply_remote_tag(state: &Arc<AppState>, remote_tag: String) {
 /// leaves `LastUpdateCheck` untouched too, so a failed check doesn't throttle
 /// the *next* attempt for a full interval (see `spawn_update_monitor`).
 fn check_for_update(state: &Arc<AppState>) {
-    let api_url = env!("GOOPIE_RELEASES_API");
-    let body = match download::fetch_to_string(api_url) {
+    let Some(api_url) = releases_api_url() else {
+        eprintln!("[launcher] no releases API configured; skipping update check");
+        return;
+    };
+    let body = match download::fetch_to_string(&api_url) {
         Ok(b) => b,
         Err(e) => { eprintln!("[launcher] update check failed: {e:?}"); return; }
     };
@@ -80,12 +107,63 @@ fn check_for_update(state: &Arc<AppState>) {
     let remote_tag = games::json_extract_str(&body, "tag_name");
     config::set_last_known_release_tag(&remote_tag);
     apply_remote_tag(state, remote_tag);
+
+    // With the hidden `AutoApplyUpdate` setting on, apply the update we just
+    // found without waiting for the user — see `maybe_auto_apply`. Off by
+    // default, so the normal flow stays "explicit user action only".
+    maybe_auto_apply(state);
+}
+
+/// If the hidden `AutoApplyUpdate` setting is enabled *and* a newer release was
+/// detected (`AppState::update_available`), download and apply it immediately —
+/// no UI interaction. A no-op when the setting is off (the default), preserving
+/// the explicit-`SelfUpdateLauncher`-only behavior.
+fn maybe_auto_apply(state: &Arc<AppState>) {
+    if !config::get_auto_apply_update() {
+        return;
+    }
+    if state.update_available.load(Ordering::Relaxed) {
+        self_update(Arc::clone(state));
+    }
+}
+
+/// Headless update entry point used by the `--self-update-check` CLI flag (see
+/// `lib::run`). Runs a single update check — which, with `AutoApplyUpdate` on,
+/// downloads and applies a newer release and never returns (`apply_update` exits
+/// the process). When nothing is applied it prints a machine-readable
+/// `SELFUPDATE: <outcome>` line and exits with a distinct code so the end-to-end
+/// test harness can assert on the result without a GUI:
+///   - `10` `noupdate`  — checked, already up to date
+///   - `11` `disabled`  — newer release available but `AutoApplyUpdate` is off
+///   - `12` `error`     — the check failed, or an apply was attempted but failed
+///
+/// (The `applied` success case exits `0` from inside `apply_update`; the harness
+/// confirms it by the replaced binary on disk, not this code path.)
+pub fn run_self_update_check() -> ! {
+    let state = Arc::new(AppState::new());
+    check_for_update(&state);
+
+    // Still here ⇒ no update was applied; classify why for the harness.
+    let (label, code) = if !state.update_checked.load(Ordering::Relaxed) {
+        ("error", 12)
+    } else if !state.update_available.load(Ordering::Relaxed) {
+        ("noupdate", 10)
+    } else if !config::get_auto_apply_update() {
+        ("disabled", 11)
+    } else {
+        ("error", 12) // available + enabled but we returned ⇒ apply failed
+    };
+    println!("SELFUPDATE: {label}");
+    std::process::exit(code);
 }
 
 pub fn self_update(state: Arc<AppState>) {
-    let api_url = env!("GOOPIE_RELEASES_API");
+    let Some(api_url) = releases_api_url() else {
+        eprintln!("[launcher] no releases API configured; cannot self-update");
+        return;
+    };
 
-    let body = match download::fetch_to_string(api_url) {
+    let body = match download::fetch_to_string(&api_url) {
         Ok(b) => b,
         Err(e) => { eprintln!("[launcher] fetch releases failed: {e:?}"); return; }
     };
@@ -94,6 +172,13 @@ pub fn self_update(state: Arc<AppState>) {
         Some(u) => u,
         None => { eprintln!("[launcher] no matching asset found in release"); return; }
     };
+
+    // The version we're updating *to*, so the relaunch step can refresh the
+    // Windows "Programs and Features" version (see `apply_update`). Empty if the
+    // release JSON lacks a tag — apply_update then leaves the registry alone.
+    let new_version = games::json_extract_str(&body, "tag_name")
+        .trim_start_matches('v')
+        .to_string();
 
     let staging = staging_path();
 
@@ -109,7 +194,7 @@ pub fn self_update(state: Arc<AppState>) {
     }
     state.finish_download();
 
-    if let Err(e) = apply_update(&staging) {
+    if let Err(e) = apply_update(&staging, &new_version) {
         eprintln!("[launcher] apply update failed: {e:?}");
     }
 }
@@ -132,8 +217,10 @@ fn find_asset_url(api_body: &str) -> Option<String> {
 
 #[cfg(windows)]
 fn is_target_asset(name: &str) -> bool {
-    // Our portable exe: "Goopie-Launcher-v*-windows-x86_64.exe"
-    // Exclude the NSIS installer which ends with "-setup.exe"
+    // Our portable exe, e.g. "Goopie-Launcher-windows-x86_64.exe".
+    // Match is version-agnostic (release assets are versionless; CI ones embed a
+    // short SHA), so it still works after dropping the version from the filename.
+    // Exclude the NSIS installer which ends with "-setup.exe".
     name.contains("-windows-") && name.ends_with(".exe") && !name.ends_with("-setup.exe")
 }
 
@@ -181,7 +268,7 @@ fn staging_path() -> std::path::PathBuf {
 // ── Platform-specific apply ───────────────────────────────────────────────────
 
 #[cfg(windows)]
-fn apply_update(staging: &std::path::Path) -> std::io::Result<()> {
+fn apply_update(staging: &std::path::Path, new_version: &str) -> std::io::Result<()> {
     let current_exe = std::env::current_exe()?;
 
     // Quote a path for PowerShell single-quoted strings.
@@ -199,26 +286,60 @@ fn apply_update(staging: &std::path::Path) -> std::io::Result<()> {
         format!(" -ArgumentList @({})", args_ps)
     };
 
-    // Write a tiny ps1 for the elevated fallback: keeps the inline -Command
-    // string short and avoids nested quoting hell.
+    // Refresh the "Programs and Features" version. Self-update only swaps the exe,
+    // so without this the Control Panel keeps showing the installer's old version.
+    // We rewrite `DisplayVersion` on whichever Uninstall entry points at *this*
+    // install directory — automatically picking the per-user (HKCU) or
+    // per-machine (HKLM) hive. This runs inside the *same* script as the copy, so
+    // when elevation is needed the user gets a single UAC prompt covering both.
+    // A portable build (no Uninstall entry) simply matches nothing — a no-op.
+    let reg_block = if new_version.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "try {{ \
+               $dir=(Split-Path -Parent '{dst}').TrimEnd('\\'); \
+               $roots=@('HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall',\
+'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall',\
+'HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall'); \
+               foreach ($r in $roots) {{ if (Test-Path $r) {{ foreach ($k in Get-ChildItem $r) {{ \
+                 $loc=(Get-ItemProperty $k.PSPath).InstallLocation; \
+                 if ($loc -and ($loc.TrimEnd('\\') -ieq $dir)) {{ \
+                   Set-ItemProperty -Path $k.PSPath -Name DisplayVersion -Value '{ver}' }} \
+               }} }} }} \
+             }} catch {{}}\n",
+            dst = ps_quote(&current_exe),
+            ver = new_version.replace('\'', "''"),
+        )
+    };
+
+    // Write a ps1 that does the copy + DisplayVersion update as one unit. Running
+    // it (rather than inlining the copy) keeps a single source of truth for both
+    // the unelevated and elevated paths. `$ErrorActionPreference='Stop'` makes a
+    // failed copy (e.g. NSIS install in Program Files) a terminating error so the
+    // caller can detect it via the exit code and retry elevated.
     let elevate_script = std::env::temp_dir().join("goopie-elevate.ps1");
     std::fs::write(&elevate_script, format!(
-        "Copy-Item -Force '{src}' '{dst}'\n\
+        "$ErrorActionPreference='Stop'\n\
+         Copy-Item -Force '{src}' '{dst}'\n\
+         {reg}\
          Remove-Item -Force '{src}' -ErrorAction SilentlyContinue\n",
         src = ps_quote(staging),
         dst = ps_quote(&current_exe),
+        reg = reg_block,
     ))?;
 
     // Use PowerShell with a hidden window so no CMD console appears.
-    // Try the copy directly first (works for portable exe in a user-writable
-    // path); if that fails (e.g. NSIS install to Program Files), retry via
-    // -Verb RunAs which triggers a UAC elevation prompt and runs the copy as
-    // admin.  Either way, clean up temp files and relaunch.
+    // Run the script unelevated first (works for a portable exe in a
+    // user-writable path); if it fails (copy denied), retry via -Verb RunAs which
+    // triggers a single UAC prompt and runs the same copy + registry update as
+    // admin. Either way, clean up temp files and relaunch.
     let ps = format!(
-        "$src='{src}'; $dst='{dst}'; $elev='{elev}'; \
+        "$dst='{dst}'; $elev='{elev}'; \
          Start-Sleep -Milliseconds 1500; \
          $ok=$false; \
-         try {{ Copy-Item -Force $src $dst; Remove-Item -Force $src -EA 0; $ok=$true }} catch {{}}; \
+         try {{ & powershell -NoProfile -WindowStyle Hidden -File $elev; \
+                if ($LASTEXITCODE -eq 0) {{ $ok=$true }} }} catch {{}}; \
          if (-not $ok) {{ \
              try {{ Start-Process powershell -Verb RunAs -Wait \
                  -ArgumentList @('-NoProfile','-WindowStyle','Hidden','-File',$elev) \
@@ -226,7 +347,6 @@ fn apply_update(staging: &std::path::Path) -> std::io::Result<()> {
          }}; \
          Remove-Item -Force $elev -EA 0; \
          Start-Process -FilePath $dst{args}",
-        src = ps_quote(staging),
         dst = ps_quote(&current_exe),
         elev = ps_quote(&elevate_script),
         args = start_args,
@@ -240,7 +360,7 @@ fn apply_update(staging: &std::path::Path) -> std::io::Result<()> {
 }
 
 #[cfg(not(windows))]
-fn apply_update(staging: &std::path::Path) -> std::io::Result<()> {
+fn apply_update(staging: &std::path::Path, _new_version: &str) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
     let current_exe = replaceable_exe_path()?;
