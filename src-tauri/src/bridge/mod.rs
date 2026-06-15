@@ -337,6 +337,29 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
             json!(true)
         }
 
+        // ── Proton (Linux) ────────────────────────────────────────────────────
+        // Available on all platforms for bridge-compilation purposes, but
+        // `getProtonInstallations` always returns [] on non-Linux hosts.
+        "getProtonInstallations" => json!(crate::proton::list_installations()),
+        "getUseProton"           => json!(config::get_use_proton()),
+        "setUseProton"           => {
+            let enabled = args.first()
+                .map(|v| match v {
+                    serde_json::Value::Bool(b) => *b,
+                    serde_json::Value::Number(n) => n.as_i64().unwrap_or(1) != 0,
+                    serde_json::Value::String(s) => s != "0" && s != "false",
+                    _ => true,
+                })
+                .unwrap_or(true);
+            config::set_use_proton(enabled);
+            json!(true)
+        }
+        "getSelectedProton"      => json!(config::get_selected_proton()),
+        "setSelectedProton"      => {
+            config::set_selected_proton(&str_arg(&args, 0));
+            json!(true)
+        }
+
         // ── Game state ────────────────────────────────────────────────────────
         // `build` identifies which installed build (release tag directory) an
         // op applies to — see games::get_installed_builds for how the website

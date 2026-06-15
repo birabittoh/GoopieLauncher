@@ -54,6 +54,17 @@
   window.GetLanguage     = function ()    { return call('GetLanguage', []); };
   window.SetLanguage     = function (l)   { return call('SetLanguage', [l]); };
 
+  // ── Proton (Linux) ───────────────────────────────────────────────────────────
+  // On non-Linux launchers these commands are present (bridge always compiles
+  // them) but getProtonInstallations returns [] and the rest are no-ops.
+  // The website gates the UI on GetPlatform() === 'Linux' so they are never
+  // called unnecessarily on other platforms.
+  window.getProtonInstallations = function ()    { return call('getProtonInstallations', []); };
+  window.getUseProton           = function ()    { return call('getUseProton', []); };
+  window.setUseProton           = function (v)   { return call('setUseProton', [v]); };
+  window.getSelectedProton      = function ()    { return call('getSelectedProton', []); };
+  window.setSelectedProton      = function (p)   { return call('setSelectedProton', [p]); };
+
   // ── Game state ───────────────────────────────────────────────────────────────
   window.isIsoInstalled      = function (g)            { return call('isIsoInstalled', [g]); };
   window.isExeUpdated        = function (g, b)         { return call('isExeUpdated', [g, b]); };
