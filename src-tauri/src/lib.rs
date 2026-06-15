@@ -1,4 +1,5 @@
 mod auth;
+mod binfmt;
 mod bridge;
 mod launcher;
 mod config;

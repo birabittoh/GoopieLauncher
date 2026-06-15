@@ -165,6 +165,8 @@ pub fn get_installed_builds(game: &str) -> Vec<serde_json::Value> {
                 "version": json_extract_str(&sidecar, "version"),
                 "asset": json_extract_str(&sidecar, "asset"),
                 "exePath": json_extract_str(&sidecar, "exePath"),
+                "platform": json_extract_str(&sidecar, "platform"),
+                "arch": json_extract_str(&sidecar, "arch"),
             })
         })
         .collect();
@@ -359,7 +361,13 @@ pub fn update(
             String::new()
         };
 
-        write_sidecar(&sidecar_path, &version, &effective_asset, Some(&exe_name));
+        let exe_info = if exe_name.is_empty() {
+            crate::binfmt::ExeInfo::default()
+        } else {
+            crate::binfmt::detect_executable(&dir.join(&exe_name))
+        };
+
+        write_sidecar(&sidecar_path, &version, &effective_asset, Some(&exe_name), exe_info);
     } else {
         // ── Legacy single-exe format ──────────────────────────────────────────
         // Try to download optional .toml config.
@@ -376,7 +384,8 @@ pub fn update(
             );
         }
 
-        write_sidecar(&sidecar_path, &version, &effective_asset, None);
+        let exe_info = crate::binfmt::detect_executable(&local_path);
+        write_sidecar(&sidecar_path, &version, &effective_asset, None, exe_info);
     }
 
     // ── Optional zip packages ─────────────────────────────────────────────────
@@ -451,7 +460,7 @@ pub fn is_package_installed(game: &str, build: &str, zip_asset: &str) -> bool {
 
 // ── Play ──────────────────────────────────────────────────────────────────────
 
-pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data_root: bool) -> Option<std::process::Child> {
+pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data_root: bool) -> Result<std::process::Child, String> {
     let dir = build_dir(game, build);
 
     let exe_path: PathBuf = if !custom_exe.is_empty() {
@@ -464,7 +473,10 @@ pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data
 
     if !exe_path.exists() {
         eprintln!("[games] Play: executable not found: {}", exe_path.display());
-        return None;
+        return Err(format!(
+            "Executable not found: {}. This build may be for a different platform, or the install may be incomplete/corrupted.",
+            exe_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| exe_path.to_string_lossy().into_owned())
+        ));
     }
 
     #[cfg(unix)]
@@ -518,11 +530,11 @@ pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data
     match cmd.spawn() {
         Ok(child) => {
             eprintln!("[games] Process spawned successfully");
-            Some(child)
+            Ok(child)
         }
         Err(e) => {
             eprintln!("[games] Failed to spawn process: {}", e);
-            None
+            Err(format!("Failed to launch: {}", e))
         }
     }
 }
@@ -609,14 +621,21 @@ fn sidecar_exe_path(dir: &Path) -> Option<String> {
     if v.is_empty() { None } else { Some(v) }
 }
 
-/// Write `.installed.json`.
-fn write_sidecar(path: &Path, version: &str, asset: &str, exe_path: Option<&str>) {
+/// Write `.installed.json`. `exe_info` carries the platform/arch detected by
+/// [`crate::binfmt::detect_executable`] from the installed executable (if any
+/// was found/scanned) — `None` fields are omitted, which the frontend treats
+/// as "unknown" and never gates on.
+fn write_sidecar(path: &Path, version: &str, asset: &str, exe_path: Option<&str>, exe_info: crate::binfmt::ExeInfo) {
     let exe_field = exe_path.map(|e| format!(r#","exePath":"{}""#, e.replace('\\', "\\\\").replace('"', "\\\""))).unwrap_or_default();
+    let platform_field = exe_info.platform.map(|p| format!(r#","platform":"{}""#, p)).unwrap_or_default();
+    let arch_field = exe_info.arch.map(|a| format!(r#","arch":"{}""#, a)).unwrap_or_default();
     let json = format!(
-        r#"{{"version":"{}","asset":"{}"{}}}"#,
+        r#"{{"version":"{}","asset":"{}"{}{}{}}}"#,
         version.replace('"', "\\\""),
         asset.replace('"', "\\\""),
         exe_field,
+        platform_field,
+        arch_field,
     );
     if let Err(e) = std::fs::write(path, json) {
         eprintln!("[games] Failed to write sidecar {}: {}", path.display(), e);

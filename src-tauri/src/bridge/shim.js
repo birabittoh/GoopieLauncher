@@ -76,6 +76,11 @@
   window.isGameRunning   = function ()    { return call('isGameRunning', []); };
   window.getRunningGame  = function ()    { return call('getRunningGame', []); };
   window.closeGame       = function ()    { return call('closeGame', []); };
+  // Pollable error from the most recent Play attempt (e.g. executable not
+  // found — likely an incompatible-platform build — or a spawn error).
+  // Returns null when there is no pending error.
+  window.getLaunchError   = function ()   { return call('getLaunchError', []); };
+  window.clearLaunchError = function ()   { return call('clearLaunchError', []); };
   window.InstallPackage  = function (g, b, p, z, h, e) { return call('InstallPackage', [g, b, p, z, h, e]); };
   window.IsPackageInstalled = function (g, b, z)       { return call('IsPackageInstalled', [g, b, z]); };
 

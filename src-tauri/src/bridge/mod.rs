@@ -86,6 +86,13 @@ pub struct AppState {
     /// Whether the update monitor has completed at least one check, so the
     /// website can tell "checked, no update" apart from "hasn't checked yet".
     pub update_checked: AtomicBool,
+    /// Human-readable error from the most recent `Play` attempt, if it failed
+    /// to launch (e.g. executable not found — likely an incompatible-platform
+    /// build — or a spawn error). `None` once successfully launched or after
+    /// the frontend has consumed/cleared it via `clearLaunchError`. Launching
+    /// is fire-and-forget on a background thread, so this is the pollable
+    /// channel the frontend uses to surface the failure (see `getLaunchError`).
+    pub last_launch_error: Mutex<Option<String>>,
 }
 
 impl AppState {
@@ -104,6 +111,7 @@ impl AppState {
             update_available: AtomicBool::new(false),
             latest_version: Mutex::new(String::new()),
             update_checked: AtomicBool::new(false),
+            last_launch_error: Mutex::new(None),
         }
     }
 
@@ -129,9 +137,14 @@ impl AppState {
 /// running game loses unsaved progress" behaviour the frontend warns about.
 fn launch_and_track(state: &Arc<AppState>, game: String, build: String, cvar_args: String, custom_exe: String, set_data_root: bool) {
     kill_running_game(state);
+    *state.last_launch_error.lock().unwrap() = None;
 
-    let Some(child) = games::play(&game, &build, &cvar_args, &custom_exe, set_data_root) else {
-        return;
+    let child = match games::play(&game, &build, &cvar_args, &custom_exe, set_data_root) {
+        Ok(child) => child,
+        Err(msg) => {
+            *state.last_launch_error.lock().unwrap() = Some(msg);
+            return;
+        }
     };
 
     let session_id = state.next_session_id.fetch_add(1, Ordering::Relaxed);
@@ -424,6 +437,23 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
         // per the confirmation prompt the frontend shows before calling this).
         "closeGame" => {
             json!(kill_running_game(state))
+        }
+        // ── Launch error reporting ────────────────────────────────────────────
+        // `Play` is fire-and-forget on a background thread, so a launch failure
+        // (e.g. the installed build's executable is missing — likely the wrong
+        // platform — or the process failed to spawn) can't be returned
+        // synchronously. The frontend polls `getLaunchError` after calling Play
+        // and should call `clearLaunchError` once it has shown/dismissed it (or
+        // before retrying) so a stale error isn't re-displayed.
+        "getLaunchError" => {
+            match state.last_launch_error.lock().unwrap().as_ref() {
+                Some(msg) => json!(msg),
+                None => Value::Null,
+            }
+        }
+        "clearLaunchError" => {
+            *state.last_launch_error.lock().unwrap() = None;
+            Value::Null
         }
         "InstallPackage" => {
             let game       = str_arg(&args, 0);
