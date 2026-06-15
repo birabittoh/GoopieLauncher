@@ -10,6 +10,7 @@ mod iso;
 mod offline_site;
 mod paths;
 mod platform;
+mod proton;
 mod saves;
 mod vehicles;
 

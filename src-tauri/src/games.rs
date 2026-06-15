@@ -509,6 +509,19 @@ pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data
         }
     }
 
+    // On Linux, transparently route Windows PE executables through Proton so
+    // the user doesn't need to configure Wine themselves.
+    #[cfg(target_os = "linux")]
+    {
+        let is_windows_exe = exe_path
+            .extension()
+            .map(|e| e.eq_ignore_ascii_case("exe"))
+            .unwrap_or(false);
+        if is_windows_exe && crate::config::get_use_proton() {
+            return play_with_proton(game, &dir, &exe_path, &args);
+        }
+    }
+
     eprintln!(
         "[games] Launching: {} {:?}",
         exe_path.display(),
@@ -535,6 +548,90 @@ pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data
         Err(e) => {
             eprintln!("[games] Failed to spawn process: {}", e);
             Err(format!("Failed to launch: {}", e))
+        }
+    }
+}
+
+/// Launch a Windows `.exe` through Proton on Linux.
+///
+/// Picks the user-selected Proton installation (falling back to the newest
+/// detected one), creates a per-game Wine prefix directory on first run, and
+/// spawns `<proton>/proton run <exe> [args]` with the required Proton
+/// environment variables.
+#[cfg(target_os = "linux")]
+fn play_with_proton(
+    game: &str,
+    build_dir: &std::path::Path,
+    exe_path: &std::path::Path,
+    args: &[String],
+) -> Result<std::process::Child, String> {
+    use crate::proton;
+
+    let installations = proton::list_installations();
+    if installations.is_empty() {
+        return Err(
+            "No Proton installation found. \
+             Install Proton through Steam (or a custom build like GE-Proton), \
+             or turn off \"Use Proton\" in Settings."
+                .to_string(),
+        );
+    }
+
+    // Honour the user's explicit selection when it's still present on disk;
+    // otherwise default to the newest detected installation (index 0).
+    let selected_path = crate::config::get_selected_proton();
+    let proton_install = if !selected_path.is_empty()
+        && installations.iter().any(|p| p.path == selected_path)
+    {
+        installations
+            .into_iter()
+            .find(|p| p.path == selected_path)
+            .unwrap()
+    } else {
+        installations.into_iter().next().unwrap()
+    };
+
+    let proton_script = std::path::PathBuf::from(&proton_install.path).join("proton");
+
+    // Per-game Wine prefix: <games>/<game>/prefix/
+    // Proton populates the `pfx` subdirectory inside it on first launch.
+    let compat_data = game_root(game).join("prefix");
+    if let Err(e) = std::fs::create_dir_all(&compat_data) {
+        eprintln!(
+            "[games] Warning: could not create Proton prefix dir {}: {}",
+            compat_data.display(),
+            e
+        );
+    }
+
+    let steam_compat_client = proton::steam_client_install_path().unwrap_or_default();
+
+    eprintln!(
+        "[games] Launching via Proton ({}): {} {:?}",
+        proton_install.name,
+        exe_path.display(),
+        args
+    );
+
+    let mut cmd = std::process::Command::new(&proton_script);
+    cmd.arg("run");
+    cmd.arg(exe_path);
+    cmd.args(args);
+    cmd.current_dir(build_dir);
+    cmd.env("STEAM_COMPAT_DATA_PATH", &compat_data);
+    cmd.env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_compat_client);
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::null());
+
+    match cmd.spawn() {
+        Ok(child) => {
+            eprintln!("[games] Proton process spawned successfully");
+            Ok(child)
+        }
+        Err(e) => {
+            eprintln!("[games] Failed to spawn Proton process: {}", e);
+            Err(format!("Failed to launch via Proton: {}", e))
         }
     }
 }

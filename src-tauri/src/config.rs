@@ -263,6 +263,78 @@ pub fn set_auto_apply_update(enabled: bool) {
     }
 }
 
+// ── Proton (Linux) ───────────────────────────────────────────────────────────
+
+/// Whether the launcher should run Windows builds through Proton on Linux.
+/// Defaults to `true` so new Linux users get working gameplay out of the box.
+pub fn get_use_proton() -> bool {
+    #[cfg(windows)]
+    {
+        use winreg::{enums::*, RegKey};
+        RegKey::predef(HKEY_CURRENT_USER)
+            .open_subkey("Software\\GoopieLauncher")
+            .ok()
+            .and_then(|key| key.get_value::<u32, _>("UseProton").ok())
+            .map(|v| v != 0)
+            .unwrap_or(true)
+    }
+    #[cfg(not(windows))]
+    {
+        // Default is "1" (on).
+        ini_read("UseProton", "1") != "0"
+    }
+}
+
+pub fn set_use_proton(enabled: bool) {
+    #[cfg(windows)]
+    {
+        use winreg::{enums::*, RegKey};
+        if let Ok((key, _)) = RegKey::predef(HKEY_CURRENT_USER)
+            .create_subkey("Software\\GoopieLauncher")
+        {
+            let _ = key.set_value("UseProton", &(enabled as u32));
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        ini_write("UseProton", if enabled { "1" } else { "0" });
+    }
+}
+
+/// Path of the Proton installation the user has explicitly selected, or an
+/// empty string meaning "auto: use the newest detected installation".
+pub fn get_selected_proton() -> String {
+    #[cfg(windows)]
+    {
+        use winreg::{enums::*, RegKey};
+        RegKey::predef(HKEY_CURRENT_USER)
+            .open_subkey("Software\\GoopieLauncher")
+            .ok()
+            .and_then(|key| key.get_value::<String, _>("SelectedProton").ok())
+            .unwrap_or_default()
+    }
+    #[cfg(not(windows))]
+    {
+        ini_read("SelectedProton", "")
+    }
+}
+
+pub fn set_selected_proton(path: &str) {
+    #[cfg(windows)]
+    {
+        use winreg::{enums::*, RegKey};
+        if let Ok((key, _)) = RegKey::predef(HKEY_CURRENT_USER)
+            .create_subkey("Software\\GoopieLauncher")
+        {
+            let _ = key.set_value("SelectedProton", &path);
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        ini_write("SelectedProton", path);
+    }
+}
+
 // ── INI helpers (non-Windows) ─────────────────────────────────────────────────
 
 #[cfg(not(windows))]
