@@ -112,6 +112,29 @@ def run_tests() -> None:
         sys.exit("Tests failed — aborting release (no changes made)")
 
 
+def check_git_state(require_main: bool = False) -> None:
+    if require_main:
+        branch = subprocess.run(
+            ("git", "rev-parse", "--abbrev-ref", "HEAD"),
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        if branch != "main":
+            sys.exit(f"Must be on 'main' branch to release (currently on '{branch}')")
+
+    status = subprocess.run(
+        ("git", "status", "--porcelain"),
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    if status.strip():
+        sys.exit("Working tree is not clean — commit or stash your changes first")
+
+
 def git_author() -> str:
     name = subprocess.run(
         ("git", "config", "user.name"),
@@ -128,10 +151,26 @@ def git_author() -> str:
     return f"{name} <{email}>"
 
 
-def publish(new: str) -> None:
+def publish(new: str, push: bool) -> None:
     tag = f"v{new}"
     run("git", "add", *(str(p) for p in FILES.values()))
     run("git", "commit", "-m", f"Bump version to {new}")
+    if push:
+        run("git", "tag", tag)
+        run("git", "push")
+        run("git", "push", "origin", tag)
+        print(f"Pushed commit and tag {tag} — release workflow should trigger shortly")
+    else:
+        print(f"Committed {new} locally (use --push-only to tag and publish)")
+
+
+def push_only() -> None:
+    versions = read_versions()
+    unique = set(versions.values())
+    if len(unique) > 1:
+        sys.exit("Version mismatch across files — resolve before pushing")
+    current = unique.pop()
+    tag = f"v{current}"
     run("git", "tag", tag)
     run("git", "push")
     run("git", "push", "origin", tag)
@@ -142,10 +181,34 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "part",
+        nargs="?",
         choices=["major", "minor", "patch"],
-        help="Which part of the version to increment",
+        help="Which part of the version to increment (not used with --push-only)",
+    )
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--push",
+        action="store_true",
+        help="Commit, tag, and push to origin in one step",
+    )
+    group.add_argument(
+        "--push-only",
+        action="store_true",
+        help="Tag the current HEAD and push without making any file edits",
     )
     args = parser.parse_args()
+
+    if args.push_only:
+        if args.part:
+            parser.error("--push-only cannot be combined with a version part")
+        check_git_state(require_main=True)
+        push_only()
+        return
+
+    if not args.part:
+        parser.error("part is required unless --push-only is given")
+
+    check_git_state(require_main=args.push)
 
     versions = read_versions()
     unique = set(versions.values())
@@ -173,7 +236,7 @@ def main() -> None:
 
     write_version(new)
     print(f"{current} → {new}  (bumped {args.part})")
-    publish(new)
+    publish(new, args.push)
 
 
 if __name__ == "__main__":
