@@ -614,17 +614,32 @@ fn play_with_proton(
 
     let steam_compat_client = proton::steam_client_install_path().unwrap_or_default();
 
+    // The Windows build runs as a Windows process under Wine, so the Rex runtime
+    // resolves its user/save folder to the prefix's Documents directory instead
+    // of `~/.local/share/<game>`. Force the `user_data_root` cvar to the real
+    // Linux save dir (the same path the save manager reads) so saves land where
+    // they should. The cvar value is used verbatim by the SDK — no game-name
+    // suffix — and must be a Wine path (`Z:` maps to the host filesystem root).
+    let mut proton_args = args.to_vec();
+    if let Some(user_dir) = crate::paths::rex_user_folder().map(|p| p.join(game)) {
+        let _ = std::fs::create_dir_all(&user_dir);
+        let wine_path = format!("Z:{}", user_dir.to_string_lossy().replace('/', "\\"));
+        proton_args.push(format!("--user_data_root={}", wine_path));
+    } else {
+        eprintln!("[games] Warning: could not resolve user data folder; saves may land in the Wine prefix");
+    }
+
     eprintln!(
         "[games] Launching via Proton ({}): {} {:?}",
         proton_install.name,
         exe_path.display(),
-        args
+        proton_args
     );
 
     let mut cmd = std::process::Command::new(&proton_script);
     cmd.arg("run");
     cmd.arg(exe_path);
-    cmd.args(args);
+    cmd.args(&proton_args);
     cmd.current_dir(build_dir);
     cmd.env("STEAM_COMPAT_DATA_PATH", &compat_data);
     cmd.env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_compat_client);
