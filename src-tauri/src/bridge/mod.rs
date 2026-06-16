@@ -469,7 +469,9 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
         // and should call `clearLaunchError` once it has shown/dismissed it (or
         // before retrying) so a stale error isn't re-displayed.
         "getLaunchError" => {
-            match state.last_launch_error.lock().unwrap().as_ref() {
+            // Consume on read: clear the stored error once handed to the frontend
+            // so the website's 2s poll doesn't keep re-surfacing a dismissed error.
+            match state.last_launch_error.lock().unwrap().take() {
                 Some(msg) => json!(msg),
                 None => Value::Null,
             }
