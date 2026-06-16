@@ -297,8 +297,12 @@ pub fn update(
 ) {
     // Each release tag gets its own build directory so switching versions
     // never overwrites a sibling install — the version tag IS the build key.
+    // Wipe it first so re-installing a different platform's asset for the same
+    // tag (e.g. switching the Linux build for the Windows one) starts clean
+    // instead of co-mingling both platforms' files in one directory.
     let version = version_tag.unwrap_or("").to_string();
     let dir = build_dir(game, &version);
+    let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::create_dir_all(&dir);
 
     // Normalise release URL: ensure trailing slash.
@@ -771,38 +775,47 @@ fn update_packages_sidecar(path: &Path, asset: &str) {
 
 /// Find the main executable in a game directory after archive extraction.
 fn find_main_executable(dir: &Path, game: &str) -> String {
-    #[cfg(windows)]
-    let preferred = format!("{}.exe", game);
-    #[cfg(not(windows))]
-    let preferred = game.to_string();
+    // Match either platform's packaging regardless of host: a Windows build
+    // (`{game}.exe`) is valid on Linux too since it's routed through Proton at
+    // launch.  Exact name beats a generic fallback.
+    let game_lower = game.to_lowercase();
+    let preferred = [format!("{}.exe", game_lower), game_lower];
 
-    let mut fallback = String::new();
+    let mut exe_fallback = String::new();  // any `.exe` — a Windows build
+    let mut elf_fallback = String::new();  // any extensionless executable — a Linux build
 
-    let Ok(entries) = std::fs::read_dir(dir) else { return fallback };
+    let Ok(entries) = std::fs::read_dir(dir) else { return String::new() };
     for entry in entries.flatten() {
         if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
             continue;
         }
         let fname = entry.file_name().to_string_lossy().into_owned();
-        if fname.to_lowercase() == preferred.to_lowercase() {
+        let lower = fname.to_lowercase();
+        if preferred.contains(&lower) {
             return fname;
         }
-        #[cfg(windows)]
-        if fallback.is_empty() && fname.to_lowercase().ends_with(".exe") {
-            fallback = fname;
+        if exe_fallback.is_empty() && lower.ends_with(".exe") {
+            exe_fallback = fname.clone();
         }
-        #[cfg(unix)]
-        if fallback.is_empty() && !fname.contains('.') {
-            use std::os::unix::fs::PermissionsExt;
-            if let Ok(meta) = entry.metadata() {
-                if meta.permissions().mode() & 0o111 != 0 {
-                    fallback = fname;
+        if elf_fallback.is_empty() && !fname.contains('.') {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if entry.metadata().map(|m| m.permissions().mode() & 0o111 != 0).unwrap_or(false) {
+                    elf_fallback = fname.clone();
                 }
             }
+            #[cfg(not(unix))]
+            { elf_fallback = fname.clone(); }
         }
     }
 
-    fallback
+    // Prefer the host's native binary when present, otherwise the other
+    // platform's (Linux can still run a Windows build via Proton).
+    #[cfg(unix)]
+    { if !elf_fallback.is_empty() { elf_fallback } else { exe_fallback } }
+    #[cfg(not(unix))]
+    { if !exe_fallback.is_empty() { exe_fallback } else { elf_fallback } }
 }
 
 // ── JSON extraction helpers (avoid serde_json for simple cases) ────────────────
