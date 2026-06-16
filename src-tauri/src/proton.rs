@@ -227,8 +227,9 @@ mod imp {
             let roots = vec![common];
             let installs = find_in_roots(&roots);
             assert_eq!(installs.len(), 2);
-            // GE-Proton9-20 sorts higher (rev-alpha).
-            assert!(installs[0].name.contains("GE-Proton9-20"));
+            // "Proton 8.0 (build 1234)" sorts first in reverse-alpha ('P' > 'G').
+            assert!(installs[0].name.contains("Proton 8.0"));
+            assert!(installs[1].name.contains("GE-Proton9-20"));
         }
 
         #[test]
