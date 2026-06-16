@@ -258,7 +258,7 @@ pub fn needs_update(game: &str, build: &str, github_api_url: &str, asset_name: O
     }
 
     // ── Legacy path: SHA256 comparison ───────────────────────────────────────
-    let exe_path = dir.join(canonical_exe_name(game));
+    let exe_path = installed_exe_path(&dir, game);
     if !exe_path.exists() {
         return true;
     }
@@ -317,12 +317,12 @@ pub fn update(
 
     let is_archive = archive::is_archive(&effective_asset);
 
-    // Local destination for the downloaded file.
-    let local_path = if is_archive {
-        dir.join(&effective_asset)
-    } else {
-        dir.join(canonical_exe_name(game))
-    };
+    // Local destination for the downloaded file.  Single-exe assets are saved
+    // under their real asset name (e.g. `retip-windows-x64.exe`) rather than the
+    // host's canonical name, so a Windows build downloaded on Linux keeps its
+    // `.exe` and is routed through Proton at launch instead of being mistaken for
+    // a native binary.  `exePath` is recorded in the sidecar below.
+    let local_path = dir.join(&effective_asset);
 
     let download_url = format!("{}{}", base_url, effective_asset);
     eprintln!("[games] Downloading {} → {}", download_url, local_path.display());
@@ -385,7 +385,7 @@ pub fn update(
         }
 
         let exe_info = crate::binfmt::detect_executable(&local_path);
-        write_sidecar(&sidecar_path, &version, &effective_asset, None, exe_info);
+        write_sidecar(&sidecar_path, &version, &effective_asset, Some(&effective_asset), exe_info);
     }
 
     // ── Optional zip packages ─────────────────────────────────────────────────
@@ -465,10 +465,8 @@ pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data
 
     let exe_path: PathBuf = if !custom_exe.is_empty() {
         dir.join(custom_exe)
-    } else if let Some(sidecar_exe) = sidecar_exe_path(&dir) {
-        dir.join(sidecar_exe)
     } else {
-        dir.join(canonical_exe_name(game))
+        installed_exe_path(&dir, game)
     };
 
     if !exe_path.exists() {
@@ -509,16 +507,22 @@ pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data
         }
     }
 
-    // On Linux, transparently route Windows PE executables through Proton so
-    // the user doesn't need to configure Wine themselves.
+    // On Linux, transparently route Windows PE executables through Proton so the
+    // user doesn't need to configure Wine themselves.  Detect the actual binary
+    // format from its header rather than trusting the file name/extension — older
+    // installs saved Windows builds under a `-linux-x64` name, and routing on the
+    // real platform fixes those too.
     #[cfg(target_os = "linux")]
     {
-        let is_windows_exe = exe_path
-            .extension()
-            .map(|e| e.eq_ignore_ascii_case("exe"))
-            .unwrap_or(false);
-        if is_windows_exe && crate::config::get_use_proton() {
-            return play_with_proton(game, &dir, &exe_path, &args);
+        let is_windows = crate::binfmt::detect_executable(&exe_path).platform == Some("Windows");
+        if is_windows {
+            if crate::config::get_use_proton() {
+                return play_with_proton(game, &dir, &exe_path, &args);
+            }
+            return Err(
+                "This build is for Windows. Enable Proton support in Settings to run it on Linux."
+                    .to_string(),
+            );
         }
     }
 
@@ -716,6 +720,19 @@ fn sidecar_exe_path(dir: &Path) -> Option<String> {
     let contents = std::fs::read_to_string(dir.join(".installed.json")).ok()?;
     let v = json_extract_str(&contents, "exePath");
     if v.is_empty() { None } else { Some(v) }
+}
+
+/// Resolve a build's installed executable: the sidecar-recorded `exePath` if it
+/// exists on disk, otherwise the host-canonical name (covers older installs that
+/// recorded no `exePath`).
+fn installed_exe_path(dir: &Path, game: &str) -> PathBuf {
+    if let Some(exe) = sidecar_exe_path(dir) {
+        let p = dir.join(&exe);
+        if p.exists() {
+            return p;
+        }
+    }
+    dir.join(canonical_exe_name(game))
 }
 
 /// Write `.installed.json`. `exe_info` carries the platform/arch detected by
