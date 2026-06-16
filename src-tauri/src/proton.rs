@@ -11,8 +11,8 @@
 /// A detected Proton installation.
 #[derive(serde::Serialize)]
 pub struct ProtonInstall {
-    /// Human-readable name (contents of the `version` file if present,
-    /// otherwise the directory name, e.g. "GE-Proton9-20" or "Proton 9.0").
+    /// Human-readable name — the build's directory name
+    /// (e.g. "GE-Proton9-20" or "Proton 9.0").
     pub name: String,
     /// Absolute path to the directory that contains the `proton` launch script.
     pub path: String,
@@ -114,18 +114,11 @@ mod imp {
             .unwrap_or(false)
     }
 
-    /// Human-readable name for a Proton directory.
-    ///
-    /// Reads the `version` file if present (it typically contains a single line
-    /// like `"Proton 9.0 (build 5208)"` or `"GE-Proton9-20"`); falls back to
-    /// the directory name otherwise.
+    /// Human-readable name for a Proton directory: the directory name itself
+    /// (e.g. "GE-Proton10-34" or "Proton 9.0"). Since the path is canonicalized
+    /// before this is called, it's the real build's directory rather than a
+    /// "…Latest" symlink.
     fn proton_name(dir: &Path) -> String {
-        if let Ok(v) = std::fs::read_to_string(dir.join("version")) {
-            let trimmed = v.trim().to_string();
-            if !trimmed.is_empty() {
-                return trimmed;
-            }
-        }
         dir.file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| dir.to_string_lossy().into_owned())
@@ -240,12 +233,13 @@ mod imp {
         }
 
         #[test]
-        fn version_file_used_for_name() {
+        fn directory_name_used_for_name() {
             let tmp = tempfile::tempdir().unwrap();
+            // The version file is ignored — the directory name is the display name.
             make_proton_dir(tmp.path(), "Proton 9.0", Some("Proton 9.0 (build 5208)"));
             let installs = find_in_roots(&[tmp.path().to_path_buf()]);
             assert_eq!(installs.len(), 1);
-            assert_eq!(installs[0].name, "Proton 9.0 (build 5208)");
+            assert_eq!(installs[0].name, "Proton 9.0");
         }
 
         #[test]
