@@ -614,20 +614,41 @@ fn play_with_proton(
 
     let steam_compat_client = proton::steam_client_install_path().unwrap_or_default();
 
+    // `user_data_root` and `log_file` are launcher-managed cvars (see below). The
+    // game persists modified cvars to `<build>/<game>.toml` on "save config", and
+    // re-applies that file at startup *after* command-line flags — so leftover
+    // copies would override our values. Worse, Wine paths written into the toml
+    // by an earlier launcher build used backslashes, which are invalid TOML
+    // escapes and make the whole file fail to parse (so none of the player's
+    // settings load). Strip both keys before launch: it un-corrupts the existing
+    // file and lets each run get its own values.
+    let config_path = build_dir.join(format!("{}.toml", game));
+    strip_config_keys(&config_path, &["user_data_root", "log_file"]);
+
+    let mut proton_args = args.to_vec();
+
     // The Windows build runs as a Windows process under Wine, so the Rex runtime
     // resolves its user/save folder to the prefix's Documents directory instead
-    // of `~/.local/share/<game>`. Force the `user_data_root` cvar to the real
-    // Linux save dir (the same path the save manager reads) so saves land where
-    // they should. The cvar value is used verbatim by the SDK — no game-name
-    // suffix — and must be a Wine path (`Z:` maps to the host filesystem root).
-    let mut proton_args = args.to_vec();
+    // of `~/.local/share/<game>`. Force `user_data_root` to the real Linux save
+    // dir (the same path the save manager reads). The value is used verbatim by
+    // the SDK — no game-name suffix — and is a Wine path (`Z:` maps to the host
+    // root). Use forward slashes so it stays valid if the game writes it back to
+    // its TOML config.
     if let Some(user_dir) = crate::paths::rex_user_folder().map(|p| p.join(game)) {
         let _ = std::fs::create_dir_all(&user_dir);
-        let wine_path = format!("Z:{}", user_dir.to_string_lossy().replace('/', "\\"));
-        proton_args.push(format!("--user_data_root={}", wine_path));
+        proton_args.push(format!("--user_data_root=Z:{}", user_dir.to_string_lossy()));
     } else {
         eprintln!("[games] Warning: could not resolve user data folder; saves may land in the Wine prefix");
     }
+
+    // Logs: natively the runtime writes `<exe_dir>/logs/<game>_NNN.log`, but under
+    // Wine its default sequential logger can't open that exe-relative path, so set
+    // `log_file` explicitly to the next sequential name in the build dir's logs/
+    // folder (Wine path, forward slashes), matching native naming.
+    let logs_dir = build_dir.join("logs");
+    let _ = std::fs::create_dir_all(&logs_dir);
+    let log_path = logs_dir.join(next_log_name(&logs_dir, game));
+    proton_args.push(format!("--log_file=Z:{}", log_path.to_string_lossy()));
 
     eprintln!(
         "[games] Launching via Proton ({}): {} {:?}",
@@ -739,6 +760,42 @@ fn sidecar_exe_path(dir: &Path) -> Option<String> {
     let contents = std::fs::read_to_string(dir.join(".installed.json")).ok()?;
     let v = json_extract_str(&contents, "exePath");
     if v.is_empty() { None } else { Some(v) }
+}
+
+/// Next sequential log filename for a build's `logs/` dir, matching the Rex
+/// runtime's native `<game>_NNN.log` naming (`logs/<game>_001.log`, `_002`, …).
+#[cfg(target_os = "linux")]
+fn next_log_name(logs_dir: &Path, game: &str) -> String {
+    let prefix = format!("{}_", game);
+    let mut max_seq = 0u32;
+    if let Ok(entries) = std::fs::read_dir(logs_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if let Some(seq) = name.strip_suffix(".log").and_then(|s| s.strip_prefix(&prefix)) {
+                if let Ok(n) = seq.parse::<u32>() {
+                    max_seq = max_seq.max(n);
+                }
+            }
+        }
+    }
+    format!("{}_{:03}.log", game, max_seq + 1)
+}
+
+/// Remove the given `key = value` lines from a `<game>.toml` cvar config, leaving
+/// other settings untouched. Used to drop launcher-managed cvars the game would
+/// otherwise persist and re-apply (and which, as Wine paths, can corrupt the TOML).
+#[cfg(target_os = "linux")]
+fn strip_config_keys(config_path: &Path, keys: &[&str]) {
+    let Ok(contents) = std::fs::read_to_string(config_path) else { return };
+    let mut out = String::new();
+    for line in contents.lines() {
+        let key = line.split('=').next().unwrap_or("").trim();
+        if !keys.contains(&key) {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    let _ = std::fs::write(config_path, out);
 }
 
 /// Resolve a build's installed executable: the sidecar-recorded `exePath` if it
