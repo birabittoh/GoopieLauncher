@@ -156,13 +156,20 @@ mod imp {
                 if !is_proton_dir(&dir) {
                     continue;
                 }
-                let canonical = dir.to_string_lossy().into_owned();
+                // Resolve symlinks so the same physical install isn't listed
+                // multiple times: Steam roots (~/.steam/steam, ~/.steam/root,
+                // ~/.local/share/Steam) are usually symlinks to one another, and
+                // tools like ProtonPlus add "…Latest" symlinks pointing at the
+                // real versioned dir. Canonicalizing collapses all of those to a
+                // single entry under the original build's name/path.
+                let real = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+                let canonical = real.to_string_lossy().into_owned();
                 if seen_paths.contains(&canonical) {
                     continue;
                 }
                 seen_paths.push(canonical.clone());
                 found.push(ProtonInstall {
-                    name: proton_name(&dir),
+                    name: proton_name(&real),
                     path: canonical,
                 });
             }
@@ -263,6 +270,40 @@ mod imp {
             // Pass the same root twice.
             let roots = vec![common.clone(), common];
             let installs = find_in_roots(&roots);
+            assert_eq!(installs.len(), 1);
+        }
+
+        #[test]
+        fn deduplicates_symlinked_latest_build() {
+            let tmp = tempfile::tempdir().unwrap();
+            let common = tmp.path().join("steamapps").join("common");
+            fs::create_dir_all(&common).unwrap();
+            make_proton_dir(&common, "GE-Proton10-34", Some("GE-Proton10-34"));
+            // ProtonPlus-style "Latest" symlink pointing at the real build dir.
+            std::os::unix::fs::symlink(
+                common.join("GE-Proton10-34"),
+                common.join("Proton-GE Latest"),
+            )
+            .unwrap();
+
+            let installs = find_in_roots(&[common]);
+            assert_eq!(installs.len(), 1);
+            // Listed under the real build, not the "Latest" alias.
+            assert_eq!(installs[0].name, "GE-Proton10-34");
+        }
+
+        #[test]
+        fn deduplicates_across_symlinked_roots() {
+            let tmp = tempfile::tempdir().unwrap();
+            let real_common = tmp.path().join("real").join("steamapps").join("common");
+            fs::create_dir_all(&real_common).unwrap();
+            make_proton_dir(&real_common, "GE-Proton10-34", Some("GE-Proton10-34"));
+            // A second "root" that is really a symlink to the same common dir
+            // (mirrors ~/.steam/steam vs ~/.local/share/Steam aliasing).
+            let alias_common = tmp.path().join("alias-common");
+            std::os::unix::fs::symlink(&real_common, &alias_common).unwrap();
+
+            let installs = find_in_roots(&[real_common, alias_common]);
             assert_eq!(installs.len(), 1);
         }
 
