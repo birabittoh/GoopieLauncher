@@ -166,15 +166,29 @@ fn install_asset_file_inner(
     }
 }
 
-/// Open a file picker then route the selected file through `install_asset_file`.
+/// Open a multi-file picker then route each selected file through `install_asset_file`.
 pub fn install_asset_pick(
     game_name: &str,
     update_checksum: &str,
     dlc_names: &[String],
     state: Arc<AppState>,
 ) {
-    let Some(file_path) = platform::pick_game_file() else { return };
-    install_asset_file(game_name, &file_path, update_checksum, dlc_names, state);
+    let paths = platform::pick_game_files();
+    for path in paths {
+        install_asset_file(game_name, &path, update_checksum, dlc_names, Arc::clone(&state));
+    }
+}
+
+pub fn install_asset_files(
+    game_name: &str,
+    paths: &[String],
+    update_checksum: &str,
+    dlc_names: &[String],
+    state: Arc<AppState>,
+) {
+    for path in paths {
+        install_asset_file(game_name, path, update_checksum, dlc_names, Arc::clone(&state));
+    }
 }
 
 enum Format {

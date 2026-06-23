@@ -24,8 +24,8 @@ pub fn install_update(game: &str, src_path: &str, expected_sha: &str) -> std::io
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(
-                    "checksum mismatch: expected {}, got {}",
-                    expected_sha, actual
+                    "Update checksum mismatch: expected {}…, got {}…",
+                    &expected_sha[..12], &actual[..12]
                 ),
             ));
         }
@@ -64,6 +64,16 @@ pub fn install_dlc(game: &str, src_path: &str, dlc_names: &[String]) -> std::io:
         .unwrap_or_default();
 
     let base = content_base(game)?;
+
+    // Remove any existing DLC with the same display name (even under a different hash)
+    // to prevent duplicate entries when the same DLC is installed from different files.
+    let existing = list_installed_dlc(game);
+    for dlc in &existing {
+        if dlc.name.trim().eq_ignore_ascii_case(meta.display_name.trim()) && !meta.display_name.trim().is_empty() {
+            eprintln!("[dlc] Replacing existing DLC \"{}\" (old hash={}, tid={})", dlc.name, dlc.hash, dlc.title_id);
+            remove_dlc(game, &dlc.title_id, &dlc.hash);
+        }
+    }
 
     // Content dir: <base>/<xuid>/<title_id>/00000002/<hash>/
     let content_dir = base

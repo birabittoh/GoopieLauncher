@@ -15,7 +15,7 @@ mod saves;
 mod vehicles;
 
 use std::sync::Arc;
-use tauri::{WebviewUrl, WebviewWindowBuilder};
+use tauri::{DragDropEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 pub use bridge::AppState;
 
@@ -146,6 +146,23 @@ pub fn run() {
             launcher::spawn_update_monitor(Arc::clone(&state_for_setup));
 
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let WindowEvent::DragDrop(DragDropEvent::Drop { paths, .. }) = event {
+                let paths_json: Vec<String> = paths
+                    .iter()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect();
+                if let Ok(json) = serde_json::to_string(&paths_json) {
+                    let js = format!(
+                        "window.dispatchEvent(new CustomEvent('goopie:filedrop', {{ detail: {{ paths: {} }} }}))",
+                        json
+                    );
+                    for webview in window.webviews() {
+                        let _ = webview.eval(&js);
+                    }
+                }
+            }
         })
         // No tauri::command handlers — all native calls go through the bridge scheme.
         .invoke_handler(tauri::generate_handler![])

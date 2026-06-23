@@ -98,6 +98,7 @@
   // ── Update & DLC management ──────────────────────────────────────────────────
   window.InstallAssetFile  = function (g, p, c, d) { return call('InstallAssetFile', [g, p, c, d]); };
   window.InstallAssetPick  = function (g, c, d)    { return call('InstallAssetPick', [g, c, d]); };
+  window.InstallAssetFiles = function (g, ps, c, d){ return call('InstallAssetFiles', [g, ps, c, d]); };
   window.isUpdateInstalled = function (g)          { return call('isUpdateInstalled', [g]); };
   window.RemoveUpdate      = function (g)          { return call('RemoveUpdate', [g]); };
   window.openUpdateFolder  = function (g)          { return call('openUpdateFolder', [g]); };

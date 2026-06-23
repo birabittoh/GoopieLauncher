@@ -417,6 +417,21 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
             });
             Value::Null
         }
+        "InstallAssetFiles" => {
+            let game = str_arg(&args, 0);
+            let paths: Vec<String> = args.get(1)
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
+            let checksum = str_arg(&args, 2);
+            let dlc_names: Vec<String> = args.get(3)
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
+            let state_clone = Arc::clone(state);
+            std::thread::spawn(move || {
+                extract::install_asset_files(&game, &paths, &checksum, &dlc_names, state_clone);
+            });
+            Value::Null
+        }
         "isUpdateInstalled" => {
             json!(games::is_update_installed(&str_arg(&args, 0)))
         }

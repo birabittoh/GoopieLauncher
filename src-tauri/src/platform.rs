@@ -103,3 +103,13 @@ pub fn pick_game_file() -> Option<String> {
         .pick_file()
         .map(|p| p.to_string_lossy().into_owned())
 }
+
+pub fn pick_game_files() -> Vec<String> {
+    rfd::FileDialog::new()
+        .set_title("Select game file(s)")
+        .pick_files()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect()
+}
