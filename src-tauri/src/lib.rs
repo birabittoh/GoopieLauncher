@@ -6,7 +6,7 @@ mod config;
 mod archive;
 mod download;
 mod games;
-mod iso;
+mod extract;
 mod offline_site;
 mod paths;
 mod platform;

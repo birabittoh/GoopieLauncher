@@ -20,7 +20,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use crate::{config, games, iso, launcher, offline_site, paths, platform, saves, vehicles};
+use crate::{config, extract, games, launcher, offline_site, paths, platform, saves, vehicles};
 
 // ── Shared application state ─────────────────────────────────────────────────
 
@@ -373,7 +373,7 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
         "Install" => {
             let game_name = str_arg(&args, 0);
             let state_clone = Arc::clone(state);
-            std::thread::spawn(move || iso::install_iso(&game_name, state_clone));
+            std::thread::spawn(move || extract::install_game(&game_name, state_clone));
             Value::Null
         }
         "Uninstall" => {

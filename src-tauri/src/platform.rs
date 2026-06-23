@@ -96,11 +96,12 @@ pub fn pick_folder(title: &str) -> Option<String> {
         .map(|p| p.to_string_lossy().into_owned())
 }
 
-/// Show a native file-picker dialog filtered to `.iso` files.
-pub fn pick_iso_file() -> Option<String> {
+/// Show a native file-picker dialog for game images (ISO or XBLA).
+pub fn pick_game_file() -> Option<String> {
     rfd::FileDialog::new()
-        .set_title("Select ISO file")
-        .add_filter("ISO files", &["iso"])
+        .set_title("Select game file")
+        .add_filter("Game images", &["iso"])
+        .add_filter("All files", &["*"])
         .pick_file()
         .map(|p| p.to_string_lossy().into_owned())
 }
