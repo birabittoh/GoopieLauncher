@@ -1,5 +1,6 @@
 //! Xbox 360 game extraction: ISO (XDVDFS) and XBLA (STFS/LIVE) formats.
 
+pub mod dlc;
 mod stfs;
 mod xdvdfs;
 
@@ -36,16 +37,9 @@ pub fn install_game(game_name: &str, state: Arc<AppState>) {
     }
 }
 
-/// Returns `Ok(count)` on success, `Err` on failure, or `None` if the user
-/// cancelled the file picker or the file doesn't exist.
-fn install_game_inner(game_name: &str) -> Option<std::io::Result<usize>> {
-    let file_path = platform::pick_game_file()?;
-
-    if !Path::new(&file_path).exists() {
-        eprintln!("[extract] File does not exist: {}", file_path);
-        return None;
-    }
-
+/// Extract a base-game file (ISO or STFS with default.xex) into `<games>/<game_name>/assets/`.
+/// Wipes the existing assets dir, creates it fresh, and cleans up on error.
+pub fn extract_base_game(game_name: &str, file_path: &str) -> std::io::Result<usize> {
     let games_folder = config::get_games_folder();
     let dest = Path::new(&games_folder)
         .join(game_name)
@@ -57,10 +51,7 @@ fn install_game_inner(game_name: &str) -> Option<std::io::Result<usize>> {
         }
     }
 
-    if let Err(e) = std::fs::create_dir_all(&dest) {
-        eprintln!("[extract] Failed to create destination directory: {}", e);
-        return Some(Err(e));
-    }
+    std::fs::create_dir_all(&dest)?;
 
     eprintln!(
         "[extract] Starting extraction: {} → {}",
@@ -68,14 +59,14 @@ fn install_game_inner(game_name: &str) -> Option<std::io::Result<usize>> {
         dest.display()
     );
 
-    let result = match detect_format(&file_path) {
+    let result = match detect_format(file_path) {
         Ok(Format::Xdvdfs) => {
             eprintln!("[extract] Detected XDVDFS (ISO) format");
-            xdvdfs::extract(&file_path, &dest)
+            xdvdfs::extract(file_path, &dest)
         }
         Ok(Format::Stfs) => {
             eprintln!("[extract] Detected STFS (XBLA) format");
-            stfs::extract(&file_path, &dest)
+            stfs::extract(file_path, &dest)
         }
         Err(e) => Err(e),
     };
@@ -84,7 +75,106 @@ fn install_game_inner(game_name: &str) -> Option<std::io::Result<usize>> {
         let _ = std::fs::remove_dir_all(&dest);
     }
 
-    Some(result)
+    result
+}
+
+/// Returns `Ok(count)` on success, `Err` on failure, or `None` if the user
+/// cancelled the file picker or the file doesn't exist.
+fn install_game_inner(game_name: &str) -> Option<std::io::Result<usize>> {
+    let file_path = platform::pick_game_file()?;
+
+    if !Path::new(&file_path).exists() {
+        eprintln!("[extract] File does not exist: {}", file_path);
+        return None;
+    }
+
+    Some(extract_base_game(game_name, &file_path))
+}
+
+/// Route a dropped/picked file to the right installer (base game, update, or DLC).
+///
+/// - Non-STFS magic → base game (ISO).
+/// - STFS with `default.xex` → base game.
+/// - STFS content_type `0xB0000` → title update.
+/// - STFS content_type `0x2` → DLC.
+/// - Otherwise → base game fallback.
+pub fn install_asset_file(
+    game_name: &str,
+    src_path: &str,
+    update_checksum: &str,
+    dlc_names: &[String],
+    state: Arc<AppState>,
+) {
+    state
+        .is_extracting
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+
+    let result = install_asset_file_inner(game_name, src_path, update_checksum, dlc_names);
+
+    state
+        .is_extracting
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+
+    match result {
+        Ok(()) => eprintln!("[extract] Asset install complete for {}", game_name),
+        Err(e) => {
+            eprintln!("[extract] Asset install failed: {}", e);
+            *state.last_extract_error.lock().unwrap() = Some(e.to_string());
+        }
+    }
+}
+
+fn install_asset_file_inner(
+    game_name: &str,
+    src_path: &str,
+    update_checksum: &str,
+    dlc_names: &[String],
+) -> std::io::Result<()> {
+    if !Path::new(src_path).exists() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("file not found: {}", src_path),
+        ));
+    }
+
+    match detect_format(src_path) {
+        Ok(Format::Stfs) => {
+            // Check if it has default.xex → base game
+            if stfs::has_default_xex(src_path)? {
+                extract_base_game(game_name, src_path)?;
+                return Ok(());
+            }
+            // Route by content_type
+            let meta = stfs::read_header_meta(src_path)?;
+            match meta.content_type {
+                0xB0000 => {
+                    dlc::install_update(game_name, src_path, update_checksum)?;
+                }
+                0x2 => {
+                    dlc::install_dlc(game_name, src_path, dlc_names)?;
+                }
+                _ => {
+                    extract_base_game(game_name, src_path)?;
+                }
+            }
+            Ok(())
+        }
+        Ok(Format::Xdvdfs) | Err(_) => {
+            extract_base_game(game_name, src_path)?;
+            Ok(())
+        }
+    }
+}
+
+/// Open a file picker then route the selected file through `install_asset_file`.
+pub fn install_asset_pick(
+    game_name: &str,
+    update_checksum: &str,
+    dlc_names: &[String],
+    state: Arc<AppState>,
+) {
+    let Some(file_path) = platform::pick_game_file() else { return };
+    install_asset_file(game_name, &file_path, update_checksum, dlc_names, state);
 }
 
 enum Format {

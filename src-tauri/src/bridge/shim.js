@@ -95,6 +95,16 @@
   window.InstallPackage  = function (g, b, p, z, h, e) { return call('InstallPackage', [g, b, p, z, h, e]); };
   window.IsPackageInstalled = function (g, b, z)       { return call('IsPackageInstalled', [g, b, z]); };
 
+  // ── Update & DLC management ──────────────────────────────────────────────────
+  window.InstallAssetFile  = function (g, p, c, d) { return call('InstallAssetFile', [g, p, c, d]); };
+  window.InstallAssetPick  = function (g, c, d)    { return call('InstallAssetPick', [g, c, d]); };
+  window.isUpdateInstalled = function (g)          { return call('isUpdateInstalled', [g]); };
+  window.RemoveUpdate      = function (g)          { return call('RemoveUpdate', [g]); };
+  window.openUpdateFolder  = function (g)          { return call('openUpdateFolder', [g]); };
+  window.getInstalledDlc   = function (g)          { return call('getInstalledDlc', [g]); };
+  window.RemoveDlc         = function (g, t, h)    { return call('RemoveDlc', [g, t, h]); };
+  window.openDlcFolder     = function (g, t, h)    { return call('openDlcFolder', [g, t, h]); };
+
   // ── Progress polling ─────────────────────────────────────────────────────────
   window.isExtracting        = function ()    { return call('isExtracting', []); };
   window.isUpdating          = function ()    { return call('isUpdating', []); };

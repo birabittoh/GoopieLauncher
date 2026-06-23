@@ -3,6 +3,14 @@ use std::{
     path::Path,
 };
 
+/// Metadata extracted from an STFS package header.
+pub struct StfsMeta {
+    pub content_type: u32,
+    pub title_id: u32,
+    pub display_name: String,
+    pub display_name_raw: [u8; 256],
+}
+
 const STFS_BLOCK_SIZE: usize = 0x1000;
 const FILE_TABLE_OFFSET: u64 = 0xC000;
 const FILE_TABLE_ENTRY_SIZE: usize = 0x40;
@@ -60,7 +68,7 @@ fn next_block(source: &mut std::fs::File, logical_block: u32) -> std::io::Result
     Ok(read_uint24_be(&buf))
 }
 
-fn parse_entries(path: &str) -> std::io::Result<Vec<StfsEntry>> {
+fn parse_entries_any(path: &str) -> std::io::Result<Vec<StfsEntry>> {
     let mut f = std::fs::File::open(path)?;
     f.seek(SeekFrom::Start(FILE_TABLE_OFFSET))?;
 
@@ -96,13 +104,17 @@ fn parse_entries(path: &str) -> std::io::Result<Vec<StfsEntry>> {
         index += 1;
     }
 
+    Ok(entries)
+}
+
+fn parse_entries(path: &str) -> std::io::Result<Vec<StfsEntry>> {
+    let entries = parse_entries_any(path)?;
     if !entries.iter().any(|e| e.name == "default.xex") {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "could not find default.xex in the STFS file table",
         ));
     }
-
     Ok(entries)
 }
 
@@ -172,13 +184,12 @@ fn extract_file(
     Ok(())
 }
 
-pub fn extract(path: &str, dest: &Path) -> std::io::Result<usize> {
-    let entries = parse_entries(path)?;
+fn extract_with(entries: &[StfsEntry], path: &str, dest: &Path) -> std::io::Result<usize> {
     let mut source = std::fs::File::open(path)?;
     let mut count = 0usize;
 
     for i in 0..entries.len() {
-        let rel_path = entry_path(&entries[i], &entries)?;
+        let rel_path = entry_path(&entries[i], entries)?;
         let out_path = dest.join(&rel_path);
 
         if entries[i].is_directory() {
@@ -190,4 +201,58 @@ pub fn extract(path: &str, dest: &Path) -> std::io::Result<usize> {
     }
 
     Ok(count)
+}
+
+pub fn extract(path: &str, dest: &Path) -> std::io::Result<usize> {
+    let entries = parse_entries(path)?;
+    extract_with(&entries, path, dest)
+}
+
+/// Extract all files from an STFS package (no default.xex requirement).
+pub fn extract_tree(path: &str, dest: &Path) -> std::io::Result<usize> {
+    let entries = parse_entries_any(path)?;
+    extract_with(&entries, path, dest)
+}
+
+/// Read content_type, title_id, and display_name from an STFS header.
+pub fn read_header_meta(path: &str) -> std::io::Result<StfsMeta> {
+    let mut f = std::fs::File::open(path)?;
+
+    // content_type: BE u32 @ 0x344
+    f.seek(SeekFrom::Start(0x344))?;
+    let mut buf4 = [0u8; 4];
+    f.read_exact(&mut buf4)?;
+    let content_type = u32::from_be_bytes(buf4);
+
+    // title_id: BE u32 @ 0x360
+    f.seek(SeekFrom::Start(0x360))?;
+    f.read_exact(&mut buf4)?;
+    let title_id = u32::from_be_bytes(buf4);
+
+    // display_name: 256 bytes @ 0x411, UTF-16 BE
+    f.seek(SeekFrom::Start(0x411))?;
+    let mut raw_name = [0u8; 256];
+    f.read_exact(&mut raw_name)?;
+
+    let utf16: Vec<u16> = raw_name
+        .chunks_exact(2)
+        .map(|c| u16::from_be_bytes([c[0], c[1]]))
+        .collect();
+    let display_name = String::from_utf16_lossy(&utf16)
+        .trim_end_matches('\0')
+        .trim()
+        .to_string();
+
+    Ok(StfsMeta {
+        content_type,
+        title_id,
+        display_name,
+        display_name_raw: raw_name,
+    })
+}
+
+/// Returns true if the file table contains a `default.xex` entry.
+pub fn has_default_xex(path: &str) -> std::io::Result<bool> {
+    let entries = parse_entries_any(path)?;
+    Ok(entries.iter().any(|e| e.name == "default.xex"))
 }

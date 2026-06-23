@@ -174,6 +174,31 @@ pub fn get_installed_builds(game: &str) -> Vec<serde_json::Value> {
     builds
 }
 
+// ── Update state ────────────────────────────────────────────────────────────
+
+/// Returns `true` if `<games>/<game>/update/` exists and is non-empty.
+pub fn is_update_installed(game: &str) -> bool {
+    let dir = game_root(game).join("update");
+    dir.is_dir() && std::fs::read_dir(&dir).map(|mut d| d.next().is_some()).unwrap_or(false)
+}
+
+/// Remove the extracted title-update data for a game.
+pub fn remove_update(game: &str) {
+    let dir = game_root(game).join("update");
+    if dir.exists() {
+        let _ = std::fs::remove_dir_all(&dir);
+        eprintln!("[games] Removed update for {}", game);
+    }
+}
+
+/// Open the update folder in the system file manager.
+pub fn open_update_folder(game: &str) {
+    let dir = game_root(game).join("update");
+    if dir.exists() {
+        crate::platform::open_folder(&dir.to_string_lossy());
+    }
+}
+
 // ── Uninstall ─────────────────────────────────────────────────────────────────
 
 /// Remove a single installed build (its entire `builds/<tag>/` directory).
@@ -496,12 +521,22 @@ pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data
             "--game_data_root={}",
             game_root(game).join("assets").to_string_lossy()
         ));
+        // Mount the title update if installed.
+        let update_dir = game_root(game).join("update");
+        if update_dir.is_dir() && std::fs::read_dir(&update_dir).map(|mut d| d.next().is_some()).unwrap_or(false) {
+            args.push(format!(
+                "--update_data_root={}",
+                update_dir.to_string_lossy()
+            ));
+        }
     } else {
         // Older builds that don't support --game_data_root look for assets
         // relative to their own directory.  Ensure a junction/symlink exists so
         // they can still find the shared ISO data without copying it.
         ensure_assets_link(game, &dir);
     }
+
+    ensure_xexp_link(game);
 
     if !cvar_args.is_empty() {
         // Split on whitespace, respecting quoted strings would be ideal but this
@@ -743,6 +778,31 @@ fn ensure_assets_link(game: &str, build_dir: &Path) {
                 "[games] Created assets symlink: {} -> {}",
                 link.display(), target.display()
             );
+        }
+    }
+}
+
+/// If `update/default.xexp` exists but `assets/default.xexp` does not, create a
+/// symlink (Unix) or copy (Windows) so the runtime can find the XEX delta patch.
+fn ensure_xexp_link(game: &str) {
+    let root = game_root(game);
+    let src = root.join("update").join("default.xexp");
+    let dst = root.join("assets").join("default.xexp");
+    if !src.exists() || dst.exists() {
+        return;
+    }
+    #[cfg(unix)]
+    {
+        if let Err(e) = std::os::unix::fs::symlink(&src, &dst) {
+            eprintln!("[games] Failed to symlink xexp: {}", e);
+        }
+    }
+    #[cfg(windows)]
+    {
+        if let Err(_) = std::os::windows::fs::symlink_file(&src, &dst) {
+            if let Err(e2) = std::fs::copy(&src, &dst) {
+                eprintln!("[games] Failed to copy xexp: {}", e2);
+            }
         }
     }
 }

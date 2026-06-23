@@ -390,6 +390,55 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
             games::remove_assets(&str_arg(&args, 0));
             Value::Null
         }
+
+        // ── Update & DLC management ──────────────────────────────────────────
+        "InstallAssetFile" => {
+            let game = str_arg(&args, 0);
+            let path = str_arg(&args, 1);
+            let checksum = str_arg(&args, 2);
+            let dlc_names: Vec<String> = args.get(3)
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
+            let state_clone = Arc::clone(state);
+            std::thread::spawn(move || {
+                extract::install_asset_file(&game, &path, &checksum, &dlc_names, state_clone);
+            });
+            Value::Null
+        }
+        "InstallAssetPick" => {
+            let game = str_arg(&args, 0);
+            let checksum = str_arg(&args, 1);
+            let dlc_names: Vec<String> = args.get(2)
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
+            let state_clone = Arc::clone(state);
+            std::thread::spawn(move || {
+                extract::install_asset_pick(&game, &checksum, &dlc_names, state_clone);
+            });
+            Value::Null
+        }
+        "isUpdateInstalled" => {
+            json!(games::is_update_installed(&str_arg(&args, 0)))
+        }
+        "RemoveUpdate" => {
+            games::remove_update(&str_arg(&args, 0));
+            Value::Null
+        }
+        "openUpdateFolder" => {
+            games::open_update_folder(&str_arg(&args, 0));
+            Value::Null
+        }
+        "getInstalledDlc" => {
+            json!(extract::dlc::list_installed_dlc(&str_arg(&args, 0)))
+        }
+        "RemoveDlc" => {
+            extract::dlc::remove_dlc(&str_arg(&args, 0), &str_arg(&args, 1), &str_arg(&args, 2));
+            Value::Null
+        }
+        "openDlcFolder" => {
+            extract::dlc::open_dlc_folder(&str_arg(&args, 0), &str_arg(&args, 1), &str_arg(&args, 2));
+            Value::Null
+        }
         "Update" => {
             let game_name  = str_arg(&args, 0);
             let release_url = str_arg(&args, 1);
