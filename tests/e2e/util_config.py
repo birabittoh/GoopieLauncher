@@ -22,6 +22,92 @@ IS_WINDOWS = sys.platform.startswith("win")
 
 REG_SUBKEY = r"Software\GoopieLauncher"
 AUTO_APPLY_VALUE = "AutoApplyUpdate"
+LAST_KNOWN_RELEASE_TAG = "LastKnownReleaseTag"
+LAST_UPDATE_CHECK = "LastUpdateCheck"
+
+
+# ── Generic registry string save/restore ──────────────────────────────────────
+
+class _RegistryStringSetting:
+    """Save/restore a single REG_SZ value under ``REG_SUBKEY``."""
+
+    def __init__(self, value_name: str, config_dir: Path | None = None) -> None:
+        self.value_name = value_name
+        self.config_dir = config_dir
+        self._existed = False
+        self._old_value: str | None = None
+
+    def save(self) -> None:
+        if IS_WINDOWS:
+            import winreg
+            try:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_SUBKEY) as key:
+                    value, _ = winreg.QueryValueEx(key, self.value_name)
+                    self._existed = True
+                    self._old_value = str(value)
+            except FileNotFoundError:
+                self._existed = False
+        else:
+            line = self._read_ini_line()
+            if line is not None:
+                self._existed = True
+                self._old_value = line
+
+    def restore(self) -> None:
+        if IS_WINDOWS:
+            import winreg
+            if self._existed:
+                with winreg.CreateKey(winreg.HKEY_CURRENT_USER, REG_SUBKEY) as key:
+                    winreg.SetValueEx(key, self.value_name, 0, winreg.REG_SZ, self._old_value or "")
+            else:
+                try:
+                    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_SUBKEY, 0, winreg.KEY_SET_VALUE) as key:
+                        winreg.DeleteValue(key, self.value_name)
+                except FileNotFoundError:
+                    pass
+        else:
+            if self._existed:
+                self._write_ini_line(self._old_value or "")
+            else:
+                self._delete_ini_line()
+
+    def _ini_path(self) -> Path:
+        assert self.config_dir is not None
+        return Path(self.config_dir) / "config.ini"
+
+    def _read_ini_line(self) -> str | None:
+        path = self._ini_path()
+        if not path.exists():
+            return None
+        for line in path.read_text().splitlines():
+            if line.startswith(self.value_name + "="):
+                return line.split("=", 1)[1]
+        return None
+
+    def _write_ini_line(self, value: str) -> None:
+        path = self._ini_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lines = path.read_text().splitlines() if path.exists() else []
+        out, found = [], False
+        for line in lines:
+            if line.startswith(self.value_name + "="):
+                out.append(f"{self.value_name}={value}")
+                found = True
+            else:
+                out.append(line)
+        if not found:
+            out.append(f"{self.value_name}={value}")
+        path.write_text("\n".join(out) + "\n")
+
+    def _delete_ini_line(self) -> None:
+        path = self._ini_path()
+        if not path.exists():
+            return
+        out = [
+            line for line in path.read_text().splitlines()
+            if not line.startswith(self.value_name + "=")
+        ]
+        path.write_text("\n".join(out) + ("\n" if out else ""))
 
 
 # ── AutoApplyUpdate ───────────────────────────────────────────────────────────
@@ -129,6 +215,24 @@ class AutoApplySetting:
             if not line.startswith(AUTO_APPLY_VALUE + "=")
         ]
         path.write_text("\n".join(out) + ("\n" if out else ""))
+
+
+# ── Update-check cache (polluted by --self-update-check) ─────────────────────
+
+class UpdateCheckSettings:
+    """Save/restore ``LastKnownReleaseTag`` and ``LastUpdateCheck``."""
+
+    def __init__(self, config_dir: Path | None = None) -> None:
+        self._tag = _RegistryStringSetting(LAST_KNOWN_RELEASE_TAG, config_dir)
+        self._ts = _RegistryStringSetting(LAST_UPDATE_CHECK, config_dir)
+
+    def save(self) -> None:
+        self._tag.save()
+        self._ts.save()
+
+    def restore(self) -> None:
+        self._tag.restore()
+        self._ts.restore()
 
 
 # ── Windows Uninstall (Programs and Features) entry — test fixture ────────────

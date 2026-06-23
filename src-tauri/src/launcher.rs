@@ -79,11 +79,31 @@ pub fn spawn_update_monitor(state: Arc<AppState>) {
 fn apply_remote_tag(state: &Arc<AppState>, remote_tag: String) {
     let current = env!("CARGO_PKG_VERSION");
     let remote_clean = remote_tag.trim_start_matches('v');
-    let has_update = !remote_clean.is_empty() && remote_clean != current;
+    let has_update = version_is_newer(current, remote_clean);
 
     state.update_available.store(has_update, Ordering::Relaxed);
     *state.latest_version.lock().unwrap() = remote_tag;
     state.update_checked.store(true, Ordering::Relaxed);
+}
+
+/// Returns `true` when `remote` is strictly newer than `current` (semver).
+/// Falls back to a simple string inequality if either side isn't valid semver.
+fn version_is_newer(current: &str, remote: &str) -> bool {
+    if remote.is_empty() {
+        return false;
+    }
+    let parse = |s: &str| -> Option<(u64, u64, u64)> {
+        let mut parts = s.splitn(3, '.');
+        Some((
+            parts.next()?.parse().ok()?,
+            parts.next()?.parse().ok()?,
+            parts.next()?.parse().ok()?,
+        ))
+    };
+    match (parse(current), parse(remote)) {
+        (Some(c), Some(r)) => r > c,
+        _ => remote != current,
+    }
 }
 
 /// Fetch the latest release tag and refresh `AppState`'s update cache. Leaves
@@ -440,6 +460,20 @@ mod tests {
     // game as running exactly while one is tracked, so the guard above actually
     // fires when the player has a game open. Uses a real throwaway child process
     // (`sleep`) to stand in for the game; not run on Windows (no `sleep` binary).
+    #[test]
+    fn version_is_newer_semver() {
+        assert!(version_is_newer("1.3.0", "1.3.1"));
+        assert!(version_is_newer("1.3.1", "1.4.0"));
+        assert!(version_is_newer("1.3.1", "2.0.0"));
+        assert!(version_is_newer("1.3.1", "9999.0.0"));
+        assert!(!version_is_newer("1.3.1", "1.3.1"));
+        assert!(!version_is_newer("1.3.1", "1.3.0"));
+        assert!(!version_is_newer("1.3.1", "1.2.5"));
+        assert!(!version_is_newer("2.0.0", "1.99.99"));
+        assert!(!version_is_newer("1.3.1", "0.0.1"));
+        assert!(!version_is_newer("1.3.1", ""));
+    }
+
     #[cfg(not(windows))]
     #[test]
     fn game_is_running_reflects_tracked_session() {

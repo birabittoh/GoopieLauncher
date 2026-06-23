@@ -96,6 +96,8 @@ def run() -> bool:
 
     auto = cfg.AutoApplySetting(config_dir=None if IS_WINDOWS else config_dir)
     auto.save()
+    update_cache = cfg.UpdateCheckSettings(config_dir=None if IS_WINDOWS else config_dir)
+    update_cache.save()
 
     server = MockReleaseServer(asset_name(), payload, tag=NEW_TAG).start()
     ok = True
@@ -158,6 +160,7 @@ def run() -> bool:
             print("PASS: update not applied and reported 'disabled' when flag is off")
     finally:
         auto.restore()
+        update_cache.restore()
         if IS_WINDOWS:
             cfg.delete_uninstall_entry(test_uninstall_key)
         server.stop()
