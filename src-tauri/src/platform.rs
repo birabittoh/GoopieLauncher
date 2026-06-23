@@ -100,8 +100,6 @@ pub fn pick_folder(title: &str) -> Option<String> {
 pub fn pick_game_file() -> Option<String> {
     rfd::FileDialog::new()
         .set_title("Select game file")
-        .add_filter("Game images", &["iso"])
-        .add_filter("All files", &["*"])
         .pick_file()
         .map(|p| p.to_string_lossy().into_owned())
 }

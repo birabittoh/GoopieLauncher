@@ -93,6 +93,7 @@ pub struct AppState {
     /// is fire-and-forget on a background thread, so this is the pollable
     /// channel the frontend uses to surface the failure (see `getLaunchError`).
     pub last_launch_error: Mutex<Option<String>>,
+    pub last_extract_error: Mutex<Option<String>>,
 }
 
 impl AppState {
@@ -112,6 +113,7 @@ impl AppState {
             latest_version: Mutex::new(String::new()),
             update_checked: AtomicBool::new(false),
             last_launch_error: Mutex::new(None),
+            last_extract_error: Mutex::new(None),
         }
     }
 
@@ -506,6 +508,16 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
         // Extract progress is not tracked per-file (xdvdfs doesn't report it);
         // return a placeholder that keeps the UI from hanging.
         "getExtractProgress"  => json!(50_i32),
+        "getExtractError" => {
+            match state.last_extract_error.lock().unwrap().take() {
+                Some(msg) => json!(msg),
+                None => Value::Null,
+            }
+        }
+        "clearExtractError" => {
+            *state.last_extract_error.lock().unwrap() = None;
+            Value::Null
+        }
 
         // ── Folder operations ─────────────────────────────────────────────────
         "OpenGamesFolder" => {

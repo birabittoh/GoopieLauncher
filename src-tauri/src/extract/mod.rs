@@ -16,14 +16,34 @@ use crate::{config, platform, AppState};
 ///
 /// Detects the format (ISO vs XBLA) automatically from the file header.
 pub fn install_game(game_name: &str, state: Arc<AppState>) {
-    let Some(file_path) = platform::pick_game_file() else {
-        eprintln!("[extract] No file selected");
-        return;
-    };
+    state
+        .is_extracting
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+
+    let result = install_game_inner(game_name);
+
+    state
+        .is_extracting
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+
+    match result {
+        Some(Ok(count)) => eprintln!("[extract] Extraction complete: {} files extracted", count),
+        Some(Err(e)) => {
+            eprintln!("[extract] Extraction failed: {}", e);
+            *state.last_extract_error.lock().unwrap() = Some(e.to_string());
+        }
+        None => {}
+    }
+}
+
+/// Returns `Ok(count)` on success, `Err` on failure, or `None` if the user
+/// cancelled the file picker or the file doesn't exist.
+fn install_game_inner(game_name: &str) -> Option<std::io::Result<usize>> {
+    let file_path = platform::pick_game_file()?;
 
     if !Path::new(&file_path).exists() {
         eprintln!("[extract] File does not exist: {}", file_path);
-        return;
+        return None;
     }
 
     let games_folder = config::get_games_folder();
@@ -39,7 +59,7 @@ pub fn install_game(game_name: &str, state: Arc<AppState>) {
 
     if let Err(e) = std::fs::create_dir_all(&dest) {
         eprintln!("[extract] Failed to create destination directory: {}", e);
-        return;
+        return Some(Err(e));
     }
 
     eprintln!(
@@ -47,10 +67,6 @@ pub fn install_game(game_name: &str, state: Arc<AppState>) {
         file_path,
         dest.display()
     );
-
-    state
-        .is_extracting
-        .store(true, std::sync::atomic::Ordering::Relaxed);
 
     let result = match detect_format(&file_path) {
         Ok(Format::Xdvdfs) => {
@@ -64,14 +80,11 @@ pub fn install_game(game_name: &str, state: Arc<AppState>) {
         Err(e) => Err(e),
     };
 
-    state
-        .is_extracting
-        .store(false, std::sync::atomic::Ordering::Relaxed);
-
-    match result {
-        Ok(count) => eprintln!("[extract] Extraction complete: {} files extracted", count),
-        Err(e) => eprintln!("[extract] Extraction failed: {}", e),
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(&dest);
     }
+
+    Some(result)
 }
 
 enum Format {

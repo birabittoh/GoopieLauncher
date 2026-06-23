@@ -101,6 +101,8 @@
   window.getDownloadProgress = function ()    { return call('getDownloadProgress', []); };
   window.getDownloadString   = function ()    { return call('getDownloadString', []); };
   window.getExtractProgress  = function ()    { return call('getExtractProgress', []); };
+  window.getExtractError     = function ()    { return call('getExtractError', []); };
+  window.clearExtractError   = function ()    { return call('clearExtractError', []); };
 
   // ── Folder operations ────────────────────────────────────────────────────────
   window.OpenGamesFolder  = function ()       { return call('OpenGamesFolder', []); };
