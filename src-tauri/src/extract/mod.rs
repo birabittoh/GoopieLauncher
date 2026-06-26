@@ -16,12 +16,12 @@ use crate::{config, platform, AppState};
 /// `<games>/<game_name>/assets/` on the calling thread.
 ///
 /// Detects the format (ISO vs XBLA) automatically from the file header.
-pub fn install_game(game_name: &str, state: Arc<AppState>) {
+pub fn install_game(game_name: &str, iso_only: bool, state: Arc<AppState>) {
     state
         .is_extracting
         .store(true, std::sync::atomic::Ordering::Relaxed);
 
-    let result = install_game_inner(game_name);
+    let result = install_game_inner(game_name, iso_only);
 
     state
         .is_extracting
@@ -80,8 +80,8 @@ pub fn extract_base_game(game_name: &str, file_path: &str) -> std::io::Result<us
 
 /// Returns `Ok(count)` on success, `Err` on failure, or `None` if the user
 /// cancelled the file picker or the file doesn't exist.
-fn install_game_inner(game_name: &str) -> Option<std::io::Result<usize>> {
-    let file_path = platform::pick_game_file()?;
+fn install_game_inner(game_name: &str, iso_only: bool) -> Option<std::io::Result<usize>> {
+    let file_path = platform::pick_game_file(iso_only)?;
 
     if !Path::new(&file_path).exists() {
         eprintln!("[extract] File does not exist: {}", file_path);
@@ -171,9 +171,10 @@ pub fn install_asset_pick(
     game_name: &str,
     update_checksum: &str,
     dlc_names: &[String],
+    iso_only: bool,
     state: Arc<AppState>,
 ) {
-    let paths = platform::pick_game_files();
+    let paths = platform::pick_game_files(iso_only);
     for path in paths {
         install_asset_file(game_name, &path, update_checksum, dlc_names, Arc::clone(&state));
     }

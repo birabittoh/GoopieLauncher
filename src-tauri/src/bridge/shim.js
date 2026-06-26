@@ -75,7 +75,7 @@
   window.getInstalledBuilds  = function (g)            { return call('getInstalledBuilds', [g]); };
 
   // ── Long-running ops (fire-and-forget; poll for progress) ────────────────────
-  window.Install         = function (g)                { return call('Install', [g]); };
+  window.Install         = function (g, x)             { return call('Install', [g, x]); };
   window.Uninstall       = function (g, b)             { return call('Uninstall', [g, b]); };
   window.UninstallAll    = function (g)                { return call('UninstallAll', [g]); };
   window.RemoveAssets    = function (g)                { return call('RemoveAssets', [g]); };
@@ -97,7 +97,7 @@
 
   // ── Update & DLC management ──────────────────────────────────────────────────
   window.InstallAssetFile  = function (g, p, c, d) { return call('InstallAssetFile', [g, p, c, d]); };
-  window.InstallAssetPick  = function (g, c, d)    { return call('InstallAssetPick', [g, c, d]); };
+  window.InstallAssetPick  = function (g, c, d, x) { return call('InstallAssetPick', [g, c, d, x]); };
   window.InstallAssetFiles = function (g, ps, c, d){ return call('InstallAssetFiles', [g, ps, c, d]); };
   window.isUpdateInstalled = function (g)          { return call('isUpdateInstalled', [g]); };
   window.RemoveUpdate      = function (g)          { return call('RemoveUpdate', [g]); };

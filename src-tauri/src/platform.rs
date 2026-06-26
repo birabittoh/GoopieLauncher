@@ -96,17 +96,26 @@ pub fn pick_folder(title: &str) -> Option<String> {
         .map(|p| p.to_string_lossy().into_owned())
 }
 
-/// Show a native file-picker dialog for game images (ISO or XBLA).
-pub fn pick_game_file() -> Option<String> {
-    rfd::FileDialog::new()
-        .set_title("Select game file")
+/// Show a native file-picker dialog for game images.
+/// When `iso_only` is true, the dialog filters for `.iso` files.
+pub fn pick_game_file(iso_only: bool) -> Option<String> {
+    let mut dialog = rfd::FileDialog::new()
+        .set_title("Select game file");
+    if iso_only {
+        dialog = dialog.add_filter("ISO image", &["iso"]);
+    }
+    dialog
         .pick_file()
         .map(|p| p.to_string_lossy().into_owned())
 }
 
-pub fn pick_game_files() -> Vec<String> {
-    rfd::FileDialog::new()
-        .set_title("Select game file(s)")
+pub fn pick_game_files(iso_only: bool) -> Vec<String> {
+    let mut dialog = rfd::FileDialog::new()
+        .set_title("Select game file(s)");
+    if iso_only {
+        dialog = dialog.add_filter("ISO image", &["iso"]);
+    }
+    dialog
         .pick_files()
         .unwrap_or_default()
         .into_iter()
