@@ -12,14 +12,17 @@ use crate::{archive, config, download, AppState};
 // ── Path helpers ──────────────────────────────────────────────────────────────
 //
 // Each game gets a root directory `<games>/<recompName>/` containing:
-//   builds/<tag>/   one self-contained install per release tag (exe, sidecar, …)
-//   assets/         shared ISO data (default.xex etc.) — one copy per game
-//   saves/          shared save-game data — one copy per game
+//   builds/<tag>/<asset>/   one self-contained install per (tag, asset) pair
+//   assets/                 shared ISO data (default.xex etc.) — one copy per game
+//   saves/                  shared save-game data — one copy per game
 //
-// Builds used to be extracted directly into the game root, so updating to a
-// new version overwrote the previous install in place. `migrate_legacy_install`
-// moves such flat installs into `builds/<version>/` the first time they're
-// touched, so existing players keep their installed build without a re-download.
+// Multiple assets of the same release (e.g. a vanilla build and a TU build)
+// therefore coexist under `builds/<tag>/` without overwriting each other.
+//
+// Two legacy migrations run lazily (once per process, per game) via
+// `migrate_builds_layout`:
+//   Stage A – root-flat installs  → `builds/<version>/`      (very old format)
+//   Stage B – flat tag dirs       → `builds/<tag>/<asset>/`  (pre-per-asset format)
 
 fn games_root() -> PathBuf {
     PathBuf::from(config::get_games_folder())
@@ -31,13 +34,22 @@ fn game_root(game: &str) -> PathBuf {
     games_root().join(game)
 }
 
-/// Directory for a single installed build: `<games>/<recompName>/builds/<tag>/`.
-/// Lazily migrates a pre-existing flat (single-build) install on first access,
-/// so this is the one place build-scoped operations should resolve their path
-/// through.
+/// Directory for a single installed build: `<games>/<recompName>/builds/<tag>/<asset>/`.
+///
+/// `build` is the opaque key returned by `get_installed_builds` — a
+/// `/`-separated relative path where each segment is a sanitised tag or asset
+/// name.  Single-segment keys (from callers that already have a flat key) are
+/// still supported and resolve one level deep.
+///
+/// Lazily runs both migration stages on first access so this is the one place
+/// build-scoped operations should resolve their path through.
 fn build_dir(game: &str, build: &str) -> PathBuf {
-    migrate_legacy_install(game);
-    game_root(game).join("builds").join(sanitize_build_key(build))
+    migrate_builds_layout(game);
+    let mut p = game_root(game).join("builds");
+    for seg in build.split('/').filter(|s| !s.is_empty()) {
+        p = p.join(sanitize_build_key(seg));
+    }
+    p
 }
 
 /// Sanitise a version tag for safe use as a directory name (replace path
@@ -58,57 +70,144 @@ fn sanitize_build_key(tag: &str) -> String {
     }
 }
 
-/// Move a pre-existing flat install (root-level `.installed.json` and its
-/// sibling files) into `builds/<version>/`. Idempotent: a no-op once migrated,
-/// and leaves the legacy files alone if the destination already exists (e.g. a
-/// build under the same tag was separately installed) to avoid clobbering data.
-fn migrate_legacy_install(game: &str) {
+/// Run both migration stages for a game, idempotently. Called from `build_dir`
+/// and `get_installed_builds` so migration happens on first access ("first
+/// start") without a separate startup hook.
+///
+/// **Stage A** — root-flat → `builds/<version>/` (very old format, pre-builds-dir):
+///   If `<game-root>/.installed.json` exists, move all root-level files (except
+///   `assets/`, `saves/`, `builds/`) into `builds/<version>/` derived from the
+///   sidecar. The root sidecar is intentionally left behind as the idempotency
+///   sentinel (so the `dest.exists()` guard fires on subsequent calls instead
+///   of rescanning) — warn once per process on the benign-conflict path.
+///
+/// **Stage B** — flat `builds/<tag>/` → `builds/<tag>/<asset>/` (pre-per-asset
+///   format): For every tag dir that contains a `.installed.json` directly (old
+///   one-asset-per-tag layout), read its `asset` field, create
+///   `builds/<tag>/<asset>/` and move all children into it. After a successful
+///   migration the flat sidecar is gone, making this naturally idempotent
+///   without a separate guard file.
+fn migrate_builds_layout(game: &str) {
     let root = game_root(game);
+
+    // ── Stage A: root-flat → builds/<version>/ ───────────────────────────────
     let legacy_sidecar = root.join(".installed.json");
-    if !legacy_sidecar.is_file() {
-        return;
-    }
-
-    let version = std::fs::read_to_string(&legacy_sidecar)
-        .map(|s| json_extract_str(&s, "version"))
-        .unwrap_or_default();
-    let build_key = sanitize_build_key(&version);
-    let dest = root.join("builds").join(&build_key);
-    if dest.exists() {
-        // This is a permanent, idempotent state for games left in it (the
-        // legacy sidecar is intentionally not removed, so this check — and
-        // therefore this branch — runs on every `build_dir()` call, which
-        // happens many times per second while the UI polls install status).
-        // Log it once per game per process instead of spamming stderr.
-        static WARNED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-        let warned = WARNED.get_or_init(|| Mutex::new(HashSet::new()));
-        if warned.lock().unwrap().insert(game.to_string()) {
-            eprintln!(
-                "[games] migrate_legacy_install: {} already has builds/{}; leaving legacy files at the game root",
-                game, build_key
-            );
+    if legacy_sidecar.is_file() {
+        let version = std::fs::read_to_string(&legacy_sidecar)
+            .map(|s| json_extract_str(&s, "version"))
+            .unwrap_or_default();
+        let build_key = sanitize_build_key(&version);
+        let dest = root.join("builds").join(&build_key);
+        if dest.exists() {
+            // Benign conflict: root sidecar still present but the target already
+            // exists (Stage A completed earlier or a build under the same tag
+            // was installed separately).  Log once; leave files alone.
+            static WARNED_A: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+            let warned = WARNED_A.get_or_init(|| Mutex::new(HashSet::new()));
+            if warned.lock().unwrap().insert(game.to_string()) {
+                eprintln!(
+                    "[games] migrate_builds_layout stage A: {} already has builds/{}; leaving legacy root files",
+                    game, build_key
+                );
+            }
+        } else if let Ok(entries) = std::fs::read_dir(&root) {
+            let entries: Vec<_> = entries.flatten().collect();
+            if std::fs::create_dir_all(&dest).is_ok() {
+                for entry in entries {
+                    let name = entry.file_name();
+                    if name == "assets" || name == "saves" || name == "builds" {
+                        continue;
+                    }
+                    let from = entry.path();
+                    let to = dest.join(&name);
+                    if let Err(e) = std::fs::rename(&from, &to) {
+                        eprintln!("[games] migrate_builds_layout stage A: failed to move {} -> {}: {}", from.display(), to.display(), e);
+                    }
+                }
+                eprintln!("[games] Migrated legacy install of {} into builds/{}", game, build_key);
+            }
         }
-        return;
     }
 
-    let Ok(entries) = std::fs::read_dir(&root) else { return };
-    let entries: Vec<_> = entries.flatten().collect();
-    if let Err(e) = std::fs::create_dir_all(&dest) {
-        eprintln!("[games] migrate_legacy_install: failed to create {}: {}", dest.display(), e);
-        return;
-    }
-    for entry in entries {
-        let name = entry.file_name();
-        if name == "assets" || name == "saves" || name == "builds" {
+    // ── Stage B: flat builds/<tag>/ → builds/<tag>/<asset>/ ──────────────────
+    let builds_root = root.join("builds");
+    let Ok(tag_entries) = std::fs::read_dir(&builds_root) else { return };
+    for tag_entry in tag_entries.flatten() {
+        if !tag_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
             continue;
         }
-        let from = entry.path();
-        let to = dest.join(&name);
-        if let Err(e) = std::fs::rename(&from, &to) {
-            eprintln!("[games] migrate_legacy_install: failed to move {} -> {}: {}", from.display(), to.display(), e);
+        let tag_dir = tag_entry.path();
+        let tag_name = tag_entry.file_name().to_string_lossy().into_owned();
+
+        // A tag dir is "old/flat" iff its .installed.json lives directly inside
+        // it (not inside an asset subdir).  Already-nested dirs don't have one.
+        let flat_sidecar = tag_dir.join(".installed.json");
+        if !flat_sidecar.is_file() {
+            continue;
         }
+
+        let sidecar_content = std::fs::read_to_string(&flat_sidecar).unwrap_or_default();
+        let asset_field = json_extract_str(&sidecar_content, "asset");
+        let sub_name = if asset_field.is_empty() {
+            "default".to_string()
+        } else {
+            sanitize_build_key(&asset_field)
+        };
+        let sub_dir = tag_dir.join(&sub_name);
+
+        if sub_dir.is_dir() {
+            // Partial-failure guard: sub dir already exists as a directory but
+            // the flat sidecar wasn't cleaned up.  Warn once and skip.
+            static WARNED_B: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+            let warned = WARNED_B.get_or_init(|| Mutex::new(HashSet::new()));
+            let key = format!("{}/{}", game, tag_name);
+            if warned.lock().unwrap().insert(key) {
+                eprintln!(
+                    "[games] migrate_builds_layout stage B: {}/{} already has {}; leaving flat files",
+                    game, tag_name, sub_name
+                );
+            }
+            continue;
+        }
+
+        // For single-exe assets the asset filename is also the on-disk filename,
+        // so sub_dir may already exist as a FILE.  Rename it aside so we can
+        // create the directory at that path, then move it in afterwards.
+        let tmp_path = tag_dir.join(".migrate_tmp");
+        if sub_dir.is_file() {
+            if let Err(e) = std::fs::rename(&sub_dir, &tmp_path) {
+                eprintln!("[games] migrate_builds_layout stage B: failed to rename {} -> {}: {}", sub_dir.display(), tmp_path.display(), e);
+                continue;
+            }
+        }
+
+        if let Err(e) = std::fs::create_dir_all(&sub_dir) {
+            // Restore the renamed file if directory creation fails.
+            if tmp_path.exists() { let _ = std::fs::rename(&tmp_path, &sub_dir); }
+            eprintln!("[games] migrate_builds_layout stage B: failed to create {}: {}", sub_dir.display(), e);
+            continue;
+        }
+
+        let Ok(children) = std::fs::read_dir(&tag_dir) else { continue };
+        for child in children.flatten() {
+            if child.path() == sub_dir || child.path() == tmp_path {
+                continue; // handled separately
+            }
+            let from = child.path();
+            let to = sub_dir.join(child.file_name());
+            if let Err(e) = std::fs::rename(&from, &to) {
+                eprintln!("[games] migrate_builds_layout stage B: failed to move {} -> {}: {}", from.display(), to.display(), e);
+            }
+        }
+        // Move the temporarily renamed exe into the sub-dir under its real name.
+        if tmp_path.exists() {
+            let to = sub_dir.join(&sub_name);
+            if let Err(e) = std::fs::rename(&tmp_path, &to) {
+                eprintln!("[games] migrate_builds_layout stage B: failed to move .migrate_tmp -> {}: {}", to.display(), e);
+            }
+        }
+        eprintln!("[games] Migrated {}/{} into {}/", game, tag_name, sub_name);
     }
-    eprintln!("[games] Migrated legacy install of {} into builds/{}", game, build_key);
 }
 
 // ── Basic state queries ───────────────────────────────────────────────────────
@@ -146,30 +245,44 @@ pub fn get_installed_version(game: &str, build: &str) -> String {
     std::fs::read_to_string(&path).unwrap_or_default()
 }
 
-/// Enumerate every installed build for a game by scanning `builds/*` and
-/// reading each one's `.installed.json` sidecar. `name` is the on-disk
-/// (sanitised) build key — pass it back as the `build` argument to
-/// Play/Uninstall/NeedsUpdate/etc.
+/// Enumerate every installed build for a game by scanning `builds/<tag>/<asset>/`
+/// and reading each asset dir's `.installed.json` sidecar.
+///
+/// The returned `name` is `"<tag>/<asset>"` — an opaque slash-separated key
+/// that is passed back verbatim to Play/Uninstall/NeedsUpdate/etc. and is
+/// resolved to a filesystem path by `build_dir`.
 pub fn get_installed_builds(game: &str) -> Vec<serde_json::Value> {
-    migrate_legacy_install(game);
+    migrate_builds_layout(game);
     let builds_root = game_root(game).join("builds");
-    let Ok(entries) = std::fs::read_dir(&builds_root) else { return Vec::new() };
-    let mut builds: Vec<serde_json::Value> = entries
-        .flatten()
-        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-        .map(|e| {
-            let name = e.file_name().to_string_lossy().into_owned();
-            let sidecar = std::fs::read_to_string(e.path().join(".installed.json")).unwrap_or_default();
-            serde_json::json!({
-                "name": name,
+    let Ok(tag_entries) = std::fs::read_dir(&builds_root) else { return Vec::new() };
+
+    let mut builds = Vec::new();
+    for tag_entry in tag_entries.flatten() {
+        if !tag_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let tag_name = tag_entry.file_name().to_string_lossy().into_owned();
+        let Ok(asset_entries) = std::fs::read_dir(tag_entry.path()) else { continue };
+        for asset_entry in asset_entries.flatten() {
+            if !asset_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            let asset_dir_name = asset_entry.file_name().to_string_lossy().into_owned();
+            let sidecar = std::fs::read_to_string(asset_entry.path().join(".installed.json"))
+                .unwrap_or_default();
+            if sidecar.is_empty() {
+                continue;
+            }
+            builds.push(serde_json::json!({
+                "name": format!("{}/{}", tag_name, asset_dir_name),
                 "version": json_extract_str(&sidecar, "version"),
                 "asset": json_extract_str(&sidecar, "asset"),
                 "exePath": json_extract_str(&sidecar, "exePath"),
                 "platform": json_extract_str(&sidecar, "platform"),
                 "arch": json_extract_str(&sidecar, "arch"),
-            })
-        })
-        .collect();
+            }));
+        }
+    }
     builds.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
     builds
 }
@@ -208,7 +321,8 @@ pub fn open_build_logs_folder(game: &str, build: &str) {
 
 // ── Uninstall ─────────────────────────────────────────────────────────────────
 
-/// Remove a single installed build (its entire `builds/<tag>/` directory).
+/// Remove a single installed build (its entire `builds/<tag>/<asset>/` directory).
+/// After removal, the parent tag directory is pruned if it is now empty.
 /// Shared `saves/` and `assets/` (ISO data) are never touched.
 pub fn uninstall(game: &str, build: &str) {
     let dir = build_dir(game, build);
@@ -218,6 +332,14 @@ pub fn uninstall(game: &str, build: &str) {
     if let Err(e) = std::fs::remove_dir_all(&dir) {
         eprintln!("[games] Failed to uninstall {} build {}: {}", game, build, e);
         return;
+    }
+    // For the new <tag>/<asset>/ layout the build key contains a '/'.
+    // Try to remove the parent tag directory; `remove_dir` is a no-op if it
+    // still contains sibling asset dirs, so this is always safe.
+    if build.contains('/') {
+        if let Some(parent) = dir.parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
     }
     eprintln!("[games] Uninstalled {} build {} (saves/assets preserved)", game, build);
 }
@@ -327,15 +449,7 @@ pub fn update(
     packages_json: Option<serde_json::Value>,
     state: Arc<AppState>,
 ) {
-    // Each release tag gets its own build directory so switching versions
-    // never overwrites a sibling install — the version tag IS the build key.
-    // Wipe it first so re-installing a different platform's asset for the same
-    // tag (e.g. switching the Linux build for the Windows one) starts clean
-    // instead of co-mingling both platforms' files in one directory.
     let version = version_tag.unwrap_or("").to_string();
-    let dir = build_dir(game, &version);
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::create_dir_all(&dir);
 
     // Normalise release URL: ensure trailing slash.
     let base_url = if release_url.ends_with('/') {
@@ -344,12 +458,26 @@ pub fn update(
         format!("{}/", release_url)
     };
 
+    // Resolve the asset name before the directory so the path can incorporate
+    // it: each (tag, asset) pair gets its own directory, letting multiple assets
+    // of the same release coexist.  Wipe only this asset's directory so a
+    // sibling asset already installed under the same tag is left untouched.
     let effective_asset = asset_name.unwrap_or("").to_string();
     let effective_asset = if effective_asset.is_empty() {
         canonical_exe_name(game)
     } else {
         effective_asset
     };
+
+    let dir = game_root(game)
+        .join("builds")
+        .join(sanitize_build_key(&version))
+        .join(sanitize_build_key(&effective_asset));
+    // For single-exe assets the asset name doubles as the on-disk filename, so
+    // `dir` may exist as a FILE from an un-migrated install.  Fall back to
+    // remove_file so create_dir_all can proceed.
+    let _ = std::fs::remove_dir_all(&dir).or_else(|_| std::fs::remove_file(&dir));
+    let _ = std::fs::create_dir_all(&dir);
 
     let is_archive = archive::is_archive(&effective_asset);
 
