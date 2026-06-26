@@ -328,7 +328,6 @@ fn staging_path() -> std::path::PathBuf {
 fn apply_update(staging: &std::path::Path, new_version: &str) -> std::io::Result<()> {
     let current_exe = std::env::current_exe()?;
 
-    // Quote a path for PowerShell single-quoted strings.
     let ps_quote = |p: &std::path::Path| p.display().to_string().replace('\'', "''");
 
     // Forward args (e.g. --local) to the relaunched process.
@@ -343,13 +342,6 @@ fn apply_update(staging: &std::path::Path, new_version: &str) -> std::io::Result
         format!(" -ArgumentList @({})", args_ps)
     };
 
-    // Refresh the "Programs and Features" version. Self-update only swaps the exe,
-    // so without this the Control Panel keeps showing the installer's old version.
-    // We rewrite `DisplayVersion` on whichever Uninstall entry points at *this*
-    // install directory — automatically picking the per-user (HKCU) or
-    // per-machine (HKLM) hive. This runs inside the *same* script as the copy, so
-    // when elevation is needed the user gets a single UAC prompt covering both.
-    // A portable build (no Uninstall entry) simply matches nothing — a no-op.
     let reg_block = if new_version.is_empty() {
         String::new()
     } else {
@@ -370,11 +362,6 @@ fn apply_update(staging: &std::path::Path, new_version: &str) -> std::io::Result
         )
     };
 
-    // Write a ps1 that does the copy + DisplayVersion update as one unit. Running
-    // it (rather than inlining the copy) keeps a single source of truth for both
-    // the unelevated and elevated paths. `$ErrorActionPreference='Stop'` makes a
-    // failed copy (e.g. NSIS install in Program Files) a terminating error so the
-    // caller can detect it via the exit code and retry elevated.
     let elevate_script = std::env::temp_dir().join("goopie-elevate.ps1");
     std::fs::write(&elevate_script, format!(
         "$ErrorActionPreference='Stop'\n\
@@ -386,11 +373,6 @@ fn apply_update(staging: &std::path::Path, new_version: &str) -> std::io::Result
         reg = reg_block,
     ))?;
 
-    // Use PowerShell with a hidden window so no CMD console appears.
-    // Run the script unelevated first (works for a portable exe in a
-    // user-writable path); if it fails (copy denied), retry via -Verb RunAs which
-    // triggers a single UAC prompt and runs the same copy + registry update as
-    // admin. Either way, clean up temp files and relaunch.
     let ps = format!(
         "$dst='{dst}'; $elev='{elev}'; \
          Start-Sleep -Milliseconds 1500; \
@@ -398,7 +380,7 @@ fn apply_update(staging: &std::path::Path, new_version: &str) -> std::io::Result
          try {{ & powershell -NoProfile -WindowStyle Hidden -File $elev; \
                 if ($LASTEXITCODE -eq 0) {{ $ok=$true }} }} catch {{}}; \
          if (-not $ok) {{ \
-             try {{ Start-Process powershell -Verb RunAs -Wait \
+             try {{ Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden \
                  -ArgumentList @('-NoProfile','-WindowStyle','Hidden','-File',$elev) \
              }} catch {{}} \
          }}; \
@@ -409,8 +391,12 @@ fn apply_update(staging: &std::path::Path, new_version: &str) -> std::io::Result
         args = start_args,
     );
 
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
     std::process::Command::new("powershell")
         .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &ps])
+        .creation_flags(CREATE_NO_WINDOW)
         .spawn()?;
 
     std::process::exit(0);
