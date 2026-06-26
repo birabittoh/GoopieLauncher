@@ -199,6 +199,13 @@ pub fn open_update_folder(game: &str) {
     }
 }
 
+/// Open the logs folder for a specific build in the system file manager.
+pub fn open_build_logs_folder(game: &str, build: &str) {
+    let dir = build_dir(game, build).join("logs");
+    let _ = std::fs::create_dir_all(&dir);
+    crate::platform::open_folder(&dir.to_string_lossy());
+}
+
 // ── Uninstall ─────────────────────────────────────────────────────────────────
 
 /// Remove a single installed build (its entire `builds/<tag>/` directory).

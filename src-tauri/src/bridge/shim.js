@@ -105,6 +105,7 @@
   window.getInstalledDlc   = function (g)          { return call('getInstalledDlc', [g]); };
   window.RemoveDlc         = function (g, t, h)    { return call('RemoveDlc', [g, t, h]); };
   window.openDlcFolder     = function (g, t, h)    { return call('openDlcFolder', [g, t, h]); };
+  window.openBuildLogsFolder = function (g, b)     { return call('openBuildLogsFolder', [g, b]); };
 
   // ── Progress polling ─────────────────────────────────────────────────────────
   window.isExtracting        = function ()    { return call('isExtracting', []); };
