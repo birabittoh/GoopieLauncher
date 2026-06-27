@@ -227,8 +227,8 @@ fn write_content_header(
     // title_id
     header[0x13C..0x140].copy_from_slice(&title_id_u32.to_be_bytes());
 
-    // license_mask = 0x80000000 (unlocked, LE)
-    header[0x148..0x14C].copy_from_slice(&0x80000000u32.to_le_bytes());
+    // license_mask = 0xFFFFFFFF (all license bits granted, LE)
+    header[0x148..0x14C].copy_from_slice(&0xFFFFFFFFu32.to_le_bytes());
 
     let header_dir = data_dir
         .join(xuid)
