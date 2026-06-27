@@ -137,11 +137,11 @@ impl AppState {
 /// Spawn `game`/`build` and start tracking it as the running game, replacing
 /// (and killing) any previously-running game first — mirrors the "closing the
 /// running game loses unsaved progress" behaviour the frontend warns about.
-fn launch_and_track(state: &Arc<AppState>, game: String, build: String, cvar_args: String, custom_exe: String, set_data_root: bool) {
+fn launch_and_track(state: &Arc<AppState>, game: String, build: String, cvar_args: String, custom_exe: String, set_data_root: bool, mount_update: bool) {
     kill_running_game(state);
     *state.last_launch_error.lock().unwrap() = None;
 
-    let child = match games::play(&game, &build, &cvar_args, &custom_exe, set_data_root) {
+    let child = match games::play(&game, &build, &cvar_args, &custom_exe, set_data_root, mount_update) {
         Ok(child) => child,
         Err(msg) => {
             *state.last_launch_error.lock().unwrap() = Some(msg);
@@ -298,6 +298,16 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
             .to_string()
     }
 
+    fn bool_arg(args: &[Value], i: usize, default: bool) -> bool {
+        args.get(i)
+            .map(|v| v.as_bool().unwrap_or(
+                v.as_i64().map(|n| n != 0).unwrap_or(
+                    v.as_str().map(|s| matches!(s, "1" | "true" | "yes")).unwrap_or(default)
+                )
+            ))
+            .unwrap_or(default)
+    }
+
     match name {
         // ── Platform ──────────────────────────────────────────────────────────
         "GetPlatform"  => json!(platform::get_platform()),
@@ -400,9 +410,10 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
             let dlc_names: Vec<String> = args.get(3)
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or_default();
+            let allow_update = bool_arg(&args, 4, true);
             let state_clone = Arc::clone(state);
             std::thread::spawn(move || {
-                extract::install_asset_file(&game, &path, &checksum, &dlc_names, state_clone);
+                extract::install_asset_file(&game, &path, &checksum, &dlc_names, allow_update, state_clone);
             });
             Value::Null
         }
@@ -413,9 +424,10 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or_default();
             let is_xbla = args.get(3).and_then(|v| v.as_bool()).unwrap_or(false);
+            let allow_update = bool_arg(&args, 4, true);
             let state_clone = Arc::clone(state);
             std::thread::spawn(move || {
-                extract::install_asset_pick(&game, &checksum, &dlc_names, !is_xbla, state_clone);
+                extract::install_asset_pick(&game, &checksum, &dlc_names, !is_xbla, allow_update, state_clone);
             });
             Value::Null
         }
@@ -428,9 +440,10 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
             let dlc_names: Vec<String> = args.get(3)
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or_default();
+            let allow_update = bool_arg(&args, 4, true);
             let state_clone = Arc::clone(state);
             std::thread::spawn(move || {
-                extract::install_asset_files(&game, &paths, &checksum, &dlc_names, state_clone);
+                extract::install_asset_files(&game, &paths, &checksum, &dlc_names, allow_update, state_clone);
             });
             Value::Null
         }
@@ -497,16 +510,11 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
             let build    = str_arg(&args, 1);
             let cvar_args = str_arg(&args, 2);
             let custom_exe = str_arg(&args, 3);
-            let set_data_root = args.get(4)
-                .map(|v| v.as_bool().unwrap_or(
-                    v.as_i64().map(|n| n != 0).unwrap_or(
-                        v.as_str().map(|s| matches!(s, "1" | "true" | "yes")).unwrap_or(false)
-                    )
-                ))
-                .unwrap_or(false);
+            let set_data_root = bool_arg(&args, 4, false);
+            let mount_update = bool_arg(&args, 5, true);
             let state_clone = Arc::clone(state);
             std::thread::spawn(move || {
-                launch_and_track(&state_clone, game, build, cvar_args, custom_exe, set_data_root);
+                launch_and_track(&state_clone, game, build, cvar_args, custom_exe, set_data_root, mount_update);
             });
             Value::Null
         }

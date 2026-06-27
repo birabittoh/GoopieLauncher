@@ -81,7 +81,7 @@
   window.RemoveAssets    = function (g)                { return call('RemoveAssets', [g]); };
   window.Update          = function (g, u, a, v, p)    { return call('Update', [g, u, a, v, p]); };
   window.NeedsUpdate     = function (g, b, u, a)       { return call('NeedsUpdate', [g, b, u, a]); };
-  window.Play            = function (g, b, c, e, r)    { return call('Play', [g, b, c, e, r]); };
+  window.Play            = function (g, b, c, e, r, m) { return call('Play', [g, b, c, e, r, m]); };
   // Running-game tracking: poll to drive the Play/Close button and the
   // "close the running game to start this one?" confirmation prompt.
   window.isGameRunning   = function ()    { return call('isGameRunning', []); };
@@ -96,9 +96,9 @@
   window.IsPackageInstalled = function (g, b, z)       { return call('IsPackageInstalled', [g, b, z]); };
 
   // ── Update & DLC management ──────────────────────────────────────────────────
-  window.InstallAssetFile  = function (g, p, c, d) { return call('InstallAssetFile', [g, p, c, d]); };
-  window.InstallAssetPick  = function (g, c, d, x) { return call('InstallAssetPick', [g, c, d, x]); };
-  window.InstallAssetFiles = function (g, ps, c, d){ return call('InstallAssetFiles', [g, ps, c, d]); };
+  window.InstallAssetFile  = function (g, p, c, d, u) { return call('InstallAssetFile', [g, p, c, d, u]); };
+  window.InstallAssetPick  = function (g, c, d, x, u) { return call('InstallAssetPick', [g, c, d, x, u]); };
+  window.InstallAssetFiles = function (g, ps, c, d, u){ return call('InstallAssetFiles', [g, ps, c, d, u]); };
   window.isUpdateInstalled = function (g)          { return call('isUpdateInstalled', [g]); };
   window.RemoveUpdate      = function (g)          { return call('RemoveUpdate', [g]); };
   window.openUpdateFolder  = function (g)          { return call('openUpdateFolder', [g]); };

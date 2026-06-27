@@ -624,7 +624,7 @@ pub fn is_package_installed(game: &str, build: &str, zip_asset: &str) -> bool {
 
 // ── Play ──────────────────────────────────────────────────────────────────────
 
-pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data_root: bool) -> Result<std::process::Child, String> {
+pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data_root: bool, mount_update: bool) -> Result<std::process::Child, String> {
     let dir = build_dir(game, build);
 
     let exe_path: PathBuf = if !custom_exe.is_empty() {
@@ -656,9 +656,9 @@ pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data
             "--game_data_root={}",
             game_root(game).join("assets").to_string_lossy()
         ));
-        // Mount the title update if installed.
+        // Mount the title update if installed and enabled.
         let update_dir = game_root(game).join("update");
-        if update_dir.is_dir() && std::fs::read_dir(&update_dir).map(|mut d| d.next().is_some()).unwrap_or(false) {
+        if mount_update && update_dir.is_dir() && std::fs::read_dir(&update_dir).map(|mut d| d.next().is_some()).unwrap_or(false) {
             args.push(format!(
                 "--update_data_root={}",
                 update_dir.to_string_lossy()

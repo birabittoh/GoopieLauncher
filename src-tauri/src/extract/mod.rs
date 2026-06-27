@@ -103,13 +103,14 @@ pub fn install_asset_file(
     src_path: &str,
     update_checksum: &str,
     dlc_names: &[String],
+    allow_update: bool,
     state: Arc<AppState>,
 ) {
     state
         .is_extracting
         .store(true, std::sync::atomic::Ordering::Relaxed);
 
-    let result = install_asset_file_inner(game_name, src_path, update_checksum, dlc_names);
+    let result = install_asset_file_inner(game_name, src_path, update_checksum, dlc_names, allow_update);
 
     state
         .is_extracting
@@ -129,6 +130,7 @@ fn install_asset_file_inner(
     src_path: &str,
     update_checksum: &str,
     dlc_names: &[String],
+    allow_update: bool,
 ) -> std::io::Result<()> {
     if !Path::new(src_path).exists() {
         return Err(std::io::Error::new(
@@ -148,6 +150,12 @@ fn install_asset_file_inner(
             let meta = stfs::read_header_meta(src_path)?;
             match meta.content_type {
                 0xB0000 => {
+                    if !allow_update {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::PermissionDenied,
+                            "title update installation is not enabled for this game",
+                        ));
+                    }
                     dlc::install_update(game_name, src_path, update_checksum)?;
                 }
                 0x2 => {
@@ -172,11 +180,12 @@ pub fn install_asset_pick(
     update_checksum: &str,
     dlc_names: &[String],
     iso_only: bool,
+    allow_update: bool,
     state: Arc<AppState>,
 ) {
     let paths = platform::pick_game_files(iso_only);
     for path in paths {
-        install_asset_file(game_name, &path, update_checksum, dlc_names, Arc::clone(&state));
+        install_asset_file(game_name, &path, update_checksum, dlc_names, allow_update, Arc::clone(&state));
     }
 }
 
@@ -185,10 +194,11 @@ pub fn install_asset_files(
     paths: &[String],
     update_checksum: &str,
     dlc_names: &[String],
+    allow_update: bool,
     state: Arc<AppState>,
 ) {
     for path in paths {
-        install_asset_file(game_name, path, update_checksum, dlc_names, Arc::clone(&state));
+        install_asset_file(game_name, path, update_checksum, dlc_names, allow_update, Arc::clone(&state));
     }
 }
 
