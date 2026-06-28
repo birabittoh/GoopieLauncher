@@ -69,6 +69,7 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             artifacts/**/*.AppImage
+            artifacts/**/*-portable/*
             artifacts/**/*.msi
             artifacts/**/*.exe
           generate_release_notes: true

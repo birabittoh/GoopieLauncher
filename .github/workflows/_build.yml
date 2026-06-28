@@ -127,6 +127,7 @@ jobs:
           # replaced that way (root-owned path + package database).
           # cp src-tauri/target/release/bundle/deb/*.deb       "staged/${BASE}.deb"
           cp src-tauri/target/release/bundle/appimage/*.AppImage "staged/${BASE}.AppImage"
+          cp src-tauri/target/release/goopie-launcher "staged/${BASE}"
 
       - name: Stage artifacts (Windows)
         if: inputs.platform == 'windows'
@@ -161,6 +162,13 @@ jobs:
         with:
           name: Goopie-Launcher-${{ inputs.version }}-linux-${{ inputs.arch }}-appimage
           path: staged/*.AppImage
+
+      - name: Upload portable binary
+        if: inputs.platform == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Goopie-Launcher-${{ inputs.version }}-linux-${{ inputs.arch }}-portable
+          path: staged/${{ env.ARTIFACT_BASE }}
 
       - name: Upload .msi
         if: inputs.platform == 'windows'
