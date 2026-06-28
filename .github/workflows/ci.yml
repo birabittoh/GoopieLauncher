@@ -26,8 +26,26 @@ jobs:
             echo "is-release=false" >> "$GITHUB_OUTPUT"
           fi
 
-  build-linux:
+  build-website:
     needs: prepare
+    if: needs.prepare.outputs.is-release != 'true'
+    name: Build offline site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: bash ./scripts/build-offline-site.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: offline-site
+          path: src-tauri/offline-site
+
+  build-linux:
+    needs: [prepare, build-website]
     if: needs.prepare.outputs.is-release != 'true'
     name: Build linux/x86_64
     uses: ./.github/workflows/_build.yml
@@ -36,9 +54,10 @@ jobs:
       version: ${{ needs.prepare.outputs.sha-short }}
       platform: linux
       arch: x86_64
+      website-artifact: offline-site
 
   build-windows:
-    needs: prepare
+    needs: [prepare, build-website]
     if: needs.prepare.outputs.is-release != 'true'
     name: Build windows/x86_64
     uses: ./.github/workflows/_build.yml
@@ -47,3 +66,4 @@ jobs:
       version: ${{ needs.prepare.outputs.sha-short }}
       platform: windows
       arch: x86_64
+      website-artifact: offline-site

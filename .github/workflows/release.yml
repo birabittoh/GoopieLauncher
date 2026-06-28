@@ -6,7 +6,24 @@ on:
       - "v*"
 
 jobs:
+  build-website:
+    name: Build offline site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: bash ./scripts/build-offline-site.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: offline-site
+          path: src-tauri/offline-site
+
   build-linux:
+    needs: build-website
     name: Build linux/x86_64
     uses: ./.github/workflows/_build.yml
     secrets: inherit
@@ -16,8 +33,10 @@ jobs:
       arch: x86_64
       # Published assets are versionless — the launcher self-updates regardless.
       versioned_filename: false
+      website-artifact: offline-site
 
   build-windows:
+    needs: build-website
     name: Build windows/x86_64
     uses: ./.github/workflows/_build.yml
     secrets: inherit
@@ -26,6 +45,7 @@ jobs:
       platform: windows
       arch: x86_64
       versioned_filename: false
+      website-artifact: offline-site
 
   release:
     name: Create GitHub Release

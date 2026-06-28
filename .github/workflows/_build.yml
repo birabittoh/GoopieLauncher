@@ -24,6 +24,14 @@ on:
         type: boolean
         required: false
         default: true
+      website-artifact:
+        description: >-
+          Name of the uploaded artifact containing the pre-built offline site.
+          When set, the build downloads it into src-tauri/offline-site/ and
+          skips the beforeBuildCommand website build.
+        type: string
+        required: false
+        default: ''
     secrets:
       GOOPIE_OAUTH_CLIENT_ID:
         description: "Google Desktop OAuth 2.0 client ID (public; baked into the binary at build time)"
@@ -40,12 +48,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          # Needed to vendor the GoopieWebsite submodule for the embedded
-          # offline site (built by scripts/build-offline-site.sh, wired into
-          # `cargo tauri build` via tauri.conf.json's beforeBuildCommand).
-          submodules: recursive
+          submodules: ${{ inputs.website-artifact == '' && 'recursive' || 'false' }}
 
       - name: Setup Node.js
+        if: inputs.website-artifact == ''
         uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -76,6 +82,14 @@ jobs:
       # ── Tauri CLI ──────────────────────────────────────────────────────────
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version '^2' --locked
+
+      # ── Pre-built website (when provided by the caller) ────────────────────
+      - name: Download pre-built offline site
+        if: inputs.website-artifact != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.website-artifact }}
+          path: src-tauri/offline-site
 
       # ── Tauri build ────────────────────────────────────────────────────────
       - name: Build (Linux)

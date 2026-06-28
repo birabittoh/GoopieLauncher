@@ -12,6 +12,11 @@ SITE_SRC="GoopieWebsite"
 SITE_DIST="$SITE_SRC/dist"
 SITE_DEST="src-tauri/offline-site"
 
+if ls "$SITE_DEST"/assets/*.js >/dev/null 2>&1; then
+  echo "Offline site bundle already exists at $SITE_DEST — skipping build."
+  exit 0
+fi
+
 if [ ! -d "$SITE_SRC/src" ]; then
   echo "GoopieWebsite submodule is not checked out. Run: git submodule update --init" >&2
   exit 1
