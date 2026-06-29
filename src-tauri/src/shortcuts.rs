@@ -15,6 +15,7 @@ use crate::games;
 
 /// Wrap raw PNG bytes into a minimal `.ico` container (single-image,
 /// PNG-compressed — supported on Vista+).
+#[cfg(windows)]
 fn png_to_ico(png: &[u8]) -> Vec<u8> {
     let mut ico = Vec::with_capacity(6 + 16 + png.len());
     // ICONDIR
@@ -76,6 +77,7 @@ fn is_local_mode() -> bool {
 
 /// Sanitize a title for use as a filename by replacing characters that are
 /// illegal on Windows (`\ / : * ? " < > |`) with dashes.
+#[cfg(windows)]
 fn sanitize_filename(title: &str) -> String {
     title.chars().map(|c| match c {
         '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '-',
