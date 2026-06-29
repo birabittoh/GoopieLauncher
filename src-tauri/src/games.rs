@@ -308,10 +308,16 @@ pub fn is_update_installed(game: &str) -> bool {
 
 /// Remove the extracted title-update data for a game.
 pub fn remove_update(game: &str) {
-    let dir = game_root(game).join("update");
+    let root = game_root(game);
+    let dir = root.join("update");
     if dir.exists() {
         let _ = std::fs::remove_dir_all(&dir);
         eprintln!("[games] Removed update for {}", game);
+    }
+    let xexp = root.join("assets").join("default.xexp");
+    if xexp.exists() {
+        let _ = std::fs::remove_file(&xexp);
+        eprintln!("[games] Removed default.xexp for {}", game);
     }
 }
 
@@ -687,7 +693,12 @@ pub fn resolve_launch(
         ensure_assets_link(game, &dir);
     }
 
-    ensure_xexp_link(game);
+    let xexp = game_root(game).join("assets").join("default.xexp");
+    if mount_update {
+        ensure_xexp_link(game);
+    } else if xexp.exists() {
+        let _ = std::fs::remove_file(&xexp);
+    }
 
     if !cvar_args.is_empty() {
         for token in cvar_args.split_whitespace() {
