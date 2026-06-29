@@ -94,12 +94,11 @@ pub struct AppState {
     /// channel the frontend uses to surface the failure (see `getLaunchError`).
     pub last_launch_error: Mutex<Option<String>>,
     pub last_extract_error: Mutex<Option<String>>,
-    /// Game to auto-play on startup (set by `--play <recompName>` CLI arg).
-    /// The website polls this once on mount, triggers Play, then clears it.
+    /// Game to auto-play (set by `--play <recompName>` CLI arg at startup,
+    /// or by the single-instance callback when a second instance forwards a
+    /// shortcut request). Launchers ≥ 1.5.0 poll this continuously so a
+    /// shortcut arriving while the launcher is already open is picked up.
     pub auto_play_game: Mutex<Option<String>>,
-    /// When true, the launcher was invoked via a shortcut (`--play`) and should
-    /// exit once the launched game closes.
-    pub exit_after_game: AtomicBool,
 }
 
 impl AppState {
@@ -121,7 +120,6 @@ impl AppState {
             last_launch_error: Mutex::new(None),
             last_extract_error: Mutex::new(None),
             auto_play_game: Mutex::new(None),
-            exit_after_game: AtomicBool::new(false),
         }
     }
 
@@ -188,11 +186,6 @@ fn monitor_running_game(state: Arc<AppState>, session_id: u64) {
                 *lock = None;
                 drop(lock);
                 launcher::auto_apply_after_game_exit(&state);
-                if state.exit_after_game.load(Ordering::Relaxed) {
-                    if let Some(window) = state.window.lock().unwrap().as_ref() {
-                        let _ = window.close();
-                    }
-                }
                 return;
             }
             Ok(None) => { /* still running */ }

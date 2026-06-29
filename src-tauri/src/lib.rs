@@ -16,7 +16,7 @@ mod shortcuts;
 mod vehicles;
 
 use std::sync::Arc;
-use tauri::{DragDropEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri::{DragDropEvent, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 pub use bridge::AppState;
 
@@ -82,10 +82,9 @@ fn self_update_check_requested() -> bool {
     std::env::args().skip(1).any(|a| a == "--self-update-check")
 }
 
-/// If the launcher was invoked with `--play <recompName>`, return the game name.
-/// Used by shortcuts to auto-play a game on launch.
-fn auto_play_game() -> Option<String> {
-    let args: Vec<String> = std::env::args().collect();
+/// Parse a `--play <recompName>` flag out of the given arg list.
+/// Used both at startup and by the single-instance callback to auto-play a game.
+fn play_arg_from(args: &[String]) -> Option<String> {
     let mut i = 1;
     while i < args.len() {
         if args[i] == "--play" {
@@ -109,9 +108,8 @@ pub fn run() {
     // marks it as a secure context before the first navigation — preventing any
     // mixed-content block from the HTTPS page.
     let state = Arc::new(AppState::new());
-    if let Some(game) = auto_play_game() {
+    if let Some(game) = play_arg_from(&std::env::args().collect::<Vec<_>>()) {
         *state.auto_play_game.lock().unwrap() = Some(game);
-        state.exit_after_game.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     let token = bridge::make_token();
     let init_script = bridge::make_init_script(&token);
@@ -121,8 +119,21 @@ pub fn run() {
     let state_for_scheme = Arc::clone(&state);
     let token_for_scheme = token.clone();
     let state_for_setup = Arc::clone(&state);
+    let state_for_single = Arc::clone(&state);
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(move |app, argv, _cwd| {
+            // Raise the existing window.
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+            // Forward a shortcut --play request into the running website.
+            if let Some(game) = play_arg_from(&argv) {
+                *state_for_single.auto_play_game.lock().unwrap() = Some(game);
+            }
+        }))
         .manage(state)
         // Register custom schemes before .setup() so wry marks them as secure
         // contexts — preventing mixed-content blocks from the HTTPS page.
