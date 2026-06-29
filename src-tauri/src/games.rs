@@ -9,6 +9,17 @@ use std::{
 
 use crate::{archive, config, download, AppState};
 
+/// Everything needed to spawn a game process: program, arguments, working
+/// directory, and optional environment overrides.  Built by [`resolve_launch`]
+/// and consumed by [`play`] (live launch) and `crate::shortcuts` (shortcut
+/// creation) so both use the exact same command.
+pub struct LaunchSpec {
+    pub program: PathBuf,
+    pub args: Vec<String>,
+    pub cwd: PathBuf,
+    pub env: Vec<(String, String)>,
+}
+
 // ── Path helpers ──────────────────────────────────────────────────────────────
 //
 // Each game gets a root directory `<games>/<recompName>/` containing:
@@ -30,7 +41,7 @@ fn games_root() -> PathBuf {
 
 /// Root directory for a game: `<games>/<recompName>/`. Houses the shared
 /// `assets/`, `saves/`, and `builds/` subdirectories.
-fn game_root(game: &str) -> PathBuf {
+pub fn game_root(game: &str) -> PathBuf {
     games_root().join(game)
 }
 
@@ -624,7 +635,17 @@ pub fn is_package_installed(game: &str, build: &str, zip_asset: &str) -> bool {
 
 // ── Play ──────────────────────────────────────────────────────────────────────
 
-pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data_root: bool, mount_update: bool) -> Result<std::process::Child, String> {
+/// Build the full launch command (program + args + cwd + env) for a game,
+/// without actually spawning it.  Used by [`play`] for live launch and by
+/// `crate::shortcuts` for shortcut creation so both use the identical command.
+pub fn resolve_launch(
+    game: &str,
+    build: &str,
+    cvar_args: &str,
+    custom_exe: &str,
+    set_data_root: bool,
+    mount_update: bool,
+) -> Result<LaunchSpec, String> {
     let dir = build_dir(game, build);
 
     let exe_path: PathBuf = if !custom_exe.is_empty() {
@@ -634,7 +655,7 @@ pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data
     };
 
     if !exe_path.exists() {
-        eprintln!("[games] Play: executable not found: {}", exe_path.display());
+        eprintln!("[games] resolve_launch: executable not found: {}", exe_path.display());
         return Err(format!(
             "Executable not found: {}. This build may be for a different platform, or the install may be incomplete/corrupted.",
             exe_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| exe_path.to_string_lossy().into_owned())
@@ -651,12 +672,10 @@ pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data
     let mut args: Vec<String> = vec![format!("--user_language={}", language)];
 
     if set_data_root {
-        // ISO data lives at the shared game root, not inside the build dir.
         args.push(format!(
             "--game_data_root={}",
             game_root(game).join("assets").to_string_lossy()
         ));
-        // Mount the title update if installed and enabled.
         let update_dir = game_root(game).join("update");
         if mount_update && update_dir.is_dir() && std::fs::read_dir(&update_dir).map(|mut d| d.next().is_some()).unwrap_or(false) {
             args.push(format!(
@@ -665,33 +684,24 @@ pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data
             ));
         }
     } else {
-        // Older builds that don't support --game_data_root look for assets
-        // relative to their own directory.  Ensure a junction/symlink exists so
-        // they can still find the shared ISO data without copying it.
         ensure_assets_link(game, &dir);
     }
 
     ensure_xexp_link(game);
 
     if !cvar_args.is_empty() {
-        // Split on whitespace, respecting quoted strings would be ideal but this
-        // matches the C++ behaviour of appending the raw string.
         for token in cvar_args.split_whitespace() {
             args.push(token.to_string());
         }
     }
 
-    // On Linux, transparently route Windows PE executables through Proton so the
-    // user doesn't need to configure Wine themselves.  Detect the actual binary
-    // format from its header rather than trusting the file name/extension — older
-    // installs saved Windows builds under a `-linux-x64` name, and routing on the
-    // real platform fixes those too.
+    // On Linux, transparently route Windows PE executables through Proton.
     #[cfg(target_os = "linux")]
     {
         let is_windows = crate::binfmt::detect_executable(&exe_path).platform == Some("Windows");
         if is_windows {
             if crate::config::get_use_proton() {
-                return play_with_proton(game, &dir, &exe_path, &args);
+                return resolve_proton_launch(game, &dir, &exe_path, &args);
             }
             return Err(
                 "This build is for Windows. Enable Proton support in Settings to run it on Linux."
@@ -700,20 +710,25 @@ pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data
         }
     }
 
+    let cwd = exe_path.parent().unwrap_or(&dir).to_path_buf();
+    Ok(LaunchSpec { program: exe_path, args, cwd, env: Vec::new() })
+}
+
+pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data_root: bool, mount_update: bool) -> Result<std::process::Child, String> {
+    let spec = resolve_launch(game, build, cvar_args, custom_exe, set_data_root, mount_update)?;
+
     eprintln!(
         "[games] Launching: {} {:?}",
-        exe_path.display(),
-        args
+        spec.program.display(),
+        spec.args
     );
 
-    let mut cmd = std::process::Command::new(&exe_path);
-    cmd.args(&args);
-    cmd.current_dir(exe_path.parent().unwrap_or(&dir));
-    // Prevent the game from inheriting the launcher's stdio handles.  In debug
-    // builds the launcher is a console app whose handles are connected to the
-    // terminal; a game that writes to stderr before its window is ready would
-    // block once the pipe buffer fills.  In release builds the handles are NULL
-    // and any write attempt would crash the child.
+    let mut cmd = std::process::Command::new(&spec.program);
+    cmd.args(&spec.args);
+    cmd.current_dir(&spec.cwd);
+    for (k, v) in &spec.env {
+        cmd.env(k, v);
+    }
     cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::null());
     cmd.stderr(std::process::Stdio::null());
@@ -730,19 +745,19 @@ pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data
     }
 }
 
-/// Launch a Windows `.exe` through Proton on Linux.
+/// Build a [`LaunchSpec`] for a Windows `.exe` routed through Proton on Linux.
 ///
 /// Picks the user-selected Proton installation (falling back to the newest
 /// detected one), creates a per-game Wine prefix directory on first run, and
-/// spawns `<proton>/proton run <exe> [args]` with the required Proton
-/// environment variables.
+/// returns a spec that runs `<proton>/proton run <exe> [args]` with the
+/// required Proton environment variables.
 #[cfg(target_os = "linux")]
-fn play_with_proton(
+fn resolve_proton_launch(
     game: &str,
     build_dir: &std::path::Path,
     exe_path: &std::path::Path,
     args: &[String],
-) -> Result<std::process::Child, String> {
+) -> Result<LaunchSpec, String> {
     use crate::proton;
 
     let installations = proton::list_installations();
@@ -755,8 +770,6 @@ fn play_with_proton(
         );
     }
 
-    // Honour the user's explicit selection when it's still present on disk;
-    // otherwise default to the newest detected installation (index 0).
     let selected_path = crate::config::get_selected_proton();
     let proton_install = if !selected_path.is_empty()
         && installations.iter().any(|p| p.path == selected_path)
@@ -771,8 +784,6 @@ fn play_with_proton(
 
     let proton_script = std::path::PathBuf::from(&proton_install.path).join("proton");
 
-    // Per-game Wine prefix: <games>/<game>/prefix/
-    // Proton populates the `pfx` subdirectory inside it on first launch.
     let compat_data = game_root(game).join("prefix");
     if let Err(e) = std::fs::create_dir_all(&compat_data) {
         eprintln!(
@@ -784,27 +795,15 @@ fn play_with_proton(
 
     let steam_compat_client = proton::steam_client_install_path().unwrap_or_default();
 
-    // `user_data_root` and `log_file` are launcher-managed cvars (see below). The
-    // game persists modified cvars to `<build>/<game>.toml` on "save config", and
-    // re-applies that file at startup *after* command-line flags — so leftover
-    // copies would override our values. Worse, Wine paths written into the toml
-    // by an earlier launcher build used backslashes, which are invalid TOML
-    // escapes and make the whole file fail to parse (so none of the player's
-    // settings load). Strip both keys before launch: it un-corrupts the existing
-    // file and lets each run get its own values.
     let exe_dir = exe_path.parent().unwrap_or(build_dir);
     let config_path = exe_dir.join(format!("{}.toml", game));
     strip_config_keys(&config_path, &["user_data_root", "log_file"]);
 
-    let mut proton_args = args.to_vec();
+    let mut proton_args: Vec<String> = Vec::new();
+    proton_args.push("run".to_string());
+    proton_args.push(exe_path.to_string_lossy().into_owned());
+    proton_args.extend_from_slice(args);
 
-    // The Windows build runs as a Windows process under Wine, so the Rex runtime
-    // resolves its user/save folder to the prefix's Documents directory instead
-    // of `~/.local/share/<game>`. Force `user_data_root` to the real Linux save
-    // dir (the same path the save manager reads). The value is used verbatim by
-    // the SDK — no game-name suffix — and is a Wine path (`Z:` maps to the host
-    // root). Use forward slashes so it stays valid if the game writes it back to
-    // its TOML config.
     if let Some(user_dir) = crate::paths::rex_user_folder().map(|p| p.join(game)) {
         let _ = std::fs::create_dir_all(&user_dir);
         proton_args.push(format!("--user_data_root=Z:{}", user_dir.to_string_lossy()));
@@ -812,43 +811,29 @@ fn play_with_proton(
         eprintln!("[games] Warning: could not resolve user data folder; saves may land in the Wine prefix");
     }
 
-    // Logs: natively the runtime writes `<exe_dir>/logs/<game>_NNN.log`, but under
-    // Wine its default sequential logger can't open that exe-relative path, so set
-    // `log_file` explicitly to the next sequential name in the build dir's logs/
-    // folder (Wine path, forward slashes), matching native naming.
     let logs_dir = exe_dir.join("logs");
     let _ = std::fs::create_dir_all(&logs_dir);
     let log_path = logs_dir.join(next_log_name(&logs_dir, game));
     proton_args.push(format!("--log_file=Z:{}", log_path.to_string_lossy()));
 
     eprintln!(
-        "[games] Launching via Proton ({}): {} {:?}",
+        "[games] Resolved Proton launch ({}): {} {:?}",
         proton_install.name,
         exe_path.display(),
         proton_args
     );
 
-    let mut cmd = std::process::Command::new(&proton_script);
-    cmd.arg("run");
-    cmd.arg(exe_path);
-    cmd.args(&proton_args);
-    cmd.current_dir(exe_dir);
-    cmd.env("STEAM_COMPAT_DATA_PATH", &compat_data);
-    cmd.env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_compat_client);
-    cmd.stdin(std::process::Stdio::null());
-    cmd.stdout(std::process::Stdio::null());
-    cmd.stderr(std::process::Stdio::null());
+    let env = vec![
+        ("STEAM_COMPAT_DATA_PATH".to_string(), compat_data.to_string_lossy().into_owned()),
+        ("STEAM_COMPAT_CLIENT_INSTALL_PATH".to_string(), steam_compat_client),
+    ];
 
-    match cmd.spawn() {
-        Ok(child) => {
-            eprintln!("[games] Proton process spawned successfully");
-            Ok(child)
-        }
-        Err(e) => {
-            eprintln!("[games] Failed to spawn Proton process: {}", e);
-            Err(format!("Failed to launch via Proton: {}", e))
-        }
-    }
+    Ok(LaunchSpec {
+        program: proton_script,
+        args: proton_args,
+        cwd: exe_dir.to_path_buf(),
+        env,
+    })
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────

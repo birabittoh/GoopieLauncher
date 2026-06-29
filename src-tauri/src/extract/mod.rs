@@ -2,6 +2,7 @@
 
 pub mod dlc;
 mod stfs;
+pub mod xex;
 mod xdvdfs;
 
 use std::{

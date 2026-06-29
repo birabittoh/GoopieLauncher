@@ -21,6 +21,10 @@ include_dir   = "0.7"
 # Networking
 reqwest       = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "stream"] }
 
+# XEX2 decryption + LZX decompression (title-image extraction)
+aes           = "0.8"
+lzxd          = "0.2"
+
 # Hashing
 sha2          = "0.10"
 hex           = "0.4"
@@ -45,9 +49,11 @@ directories   = "5"
 xdvdfs        = { version = "0.8", default-features = false, features = ["std", "read", "sync"] }
 
 # Windows registry (config storage on Windows)
+# Windows .lnk shortcut creation
 [target.'cfg(windows)'.dependencies]
 winreg        = "0.52"
 junction      = "1"
+mslnk         = "0.1"
 
 [dev-dependencies]
 tempfile      = "3"

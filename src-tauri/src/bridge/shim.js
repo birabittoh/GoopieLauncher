@@ -121,6 +121,12 @@
   window.openSaveFolder   = function (g)      { return call('openSaveFolder', [g]); };
   window.OpenExternalLink = function (url)    { return call('OpenExternalLink', [url]); };
 
+  // ── Shortcuts ───────────────────────────────────────────────────────────────
+  window.CreateShortcut    = function (g, t, i) { return call('CreateShortcut', [g, t, i]); };
+  window.shortcutExists    = function (g, t)    { return call('shortcutExists', [g, t]); };
+  window.getAutoPlayGame   = function ()        { return call('getAutoPlayGame', []); };
+  window.clearAutoPlayGame = function ()        { return call('clearAutoPlayGame', []); };
+
   // ── Save management ──────────────────────────────────────────────────────────
   window.getSaveSlots         = function (g)       { return call('getSaveSlots', [g]); };
   window.getSaveSlotCount     = function (g)       { return call('getSaveSlotCount', [g]); };

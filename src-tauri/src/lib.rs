@@ -12,6 +12,7 @@ mod paths;
 mod platform;
 mod proton;
 mod saves;
+mod shortcuts;
 mod vehicles;
 
 use std::sync::Arc;
@@ -81,6 +82,20 @@ fn self_update_check_requested() -> bool {
     std::env::args().skip(1).any(|a| a == "--self-update-check")
 }
 
+/// If the launcher was invoked with `--play <recompName>`, return the game name.
+/// Used by shortcuts to auto-play a game on launch.
+fn auto_play_game() -> Option<String> {
+    let args: Vec<String> = std::env::args().collect();
+    let mut i = 1;
+    while i < args.len() {
+        if args[i] == "--play" {
+            return args.get(i + 1).cloned();
+        }
+        i += 1;
+    }
+    None
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Headless self-update check (no GUI): runs the update flow and exits. Must
@@ -94,6 +109,10 @@ pub fn run() {
     // marks it as a secure context before the first navigation — preventing any
     // mixed-content block from the HTTPS page.
     let state = Arc::new(AppState::new());
+    if let Some(game) = auto_play_game() {
+        *state.auto_play_game.lock().unwrap() = Some(game);
+        state.exit_after_game.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     let token = bridge::make_token();
     let init_script = bridge::make_init_script(&token);
     let url_str = resolve_url();

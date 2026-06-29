@@ -20,7 +20,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use crate::{config, extract, games, launcher, offline_site, paths, platform, saves, vehicles};
+use crate::{config, extract, games, launcher, offline_site, paths, platform, saves, shortcuts, vehicles};
 
 // ── Shared application state ─────────────────────────────────────────────────
 
@@ -94,6 +94,12 @@ pub struct AppState {
     /// channel the frontend uses to surface the failure (see `getLaunchError`).
     pub last_launch_error: Mutex<Option<String>>,
     pub last_extract_error: Mutex<Option<String>>,
+    /// Game to auto-play on startup (set by `--play <recompName>` CLI arg).
+    /// The website polls this once on mount, triggers Play, then clears it.
+    pub auto_play_game: Mutex<Option<String>>,
+    /// When true, the launcher was invoked via a shortcut (`--play`) and should
+    /// exit once the launched game closes.
+    pub exit_after_game: AtomicBool,
 }
 
 impl AppState {
@@ -114,6 +120,8 @@ impl AppState {
             update_checked: AtomicBool::new(false),
             last_launch_error: Mutex::new(None),
             last_extract_error: Mutex::new(None),
+            auto_play_game: Mutex::new(None),
+            exit_after_game: AtomicBool::new(false),
         }
     }
 
@@ -179,11 +187,12 @@ fn monitor_running_game(state: Arc<AppState>, session_id: u64) {
             Ok(Some(_status)) => {
                 *lock = None;
                 drop(lock);
-                // The player just closed the game. If a self-update was deferred
-                // while it was running (hidden `AutoApplyUpdate` flag on + a newer
-                // release already detected), apply it now — see the game-running
-                // guard in `launcher::maybe_auto_apply`. No-op otherwise.
                 launcher::auto_apply_after_game_exit(&state);
+                if state.exit_after_game.load(Ordering::Relaxed) {
+                    if let Some(window) = state.window.lock().unwrap().as_ref() {
+                        let _ = window.close();
+                    }
+                }
                 return;
             }
             Ok(None) => { /* still running */ }
@@ -609,6 +618,35 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
         }
         "OpenExternalLink" => {
             platform::open_url(&str_arg(&args, 0));
+            Value::Null
+        }
+
+        // ── Shortcuts ────────────────────────────────────────────────────────
+        "CreateShortcut" => {
+            let game     = str_arg(&args, 0);
+            let title    = str_arg(&args, 1);
+            let icon_url = str_arg(&args, 2);
+            std::thread::spawn(move || {
+                if let Err(e) = shortcuts::create(&game, &title, &icon_url) {
+                    eprintln!("[bridge] CreateShortcut error: {}", e);
+                }
+            });
+            Value::Null
+        }
+        "shortcutExists" => {
+            let game  = str_arg(&args, 0);
+            let title = str_arg(&args, 1);
+            json!(shortcuts::exists(&game, &title))
+        }
+        "getAutoPlayGame" => {
+            let lock = state.auto_play_game.lock().unwrap();
+            match lock.as_ref() {
+                Some(game) => json!(game),
+                None => Value::Null,
+            }
+        }
+        "clearAutoPlayGame" => {
+            *state.auto_play_game.lock().unwrap() = None;
             Value::Null
         }
 
