@@ -708,7 +708,7 @@ pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data
 
     let mut cmd = std::process::Command::new(&exe_path);
     cmd.args(&args);
-    cmd.current_dir(&dir);
+    cmd.current_dir(exe_path.parent().unwrap_or(&dir));
     // Prevent the game from inheriting the launcher's stdio handles.  In debug
     // builds the launcher is a console app whose handles are connected to the
     // terminal; a game that writes to stderr before its window is ready would
@@ -792,7 +792,8 @@ fn play_with_proton(
     // escapes and make the whole file fail to parse (so none of the player's
     // settings load). Strip both keys before launch: it un-corrupts the existing
     // file and lets each run get its own values.
-    let config_path = build_dir.join(format!("{}.toml", game));
+    let exe_dir = exe_path.parent().unwrap_or(build_dir);
+    let config_path = exe_dir.join(format!("{}.toml", game));
     strip_config_keys(&config_path, &["user_data_root", "log_file"]);
 
     let mut proton_args = args.to_vec();
@@ -815,7 +816,7 @@ fn play_with_proton(
     // Wine its default sequential logger can't open that exe-relative path, so set
     // `log_file` explicitly to the next sequential name in the build dir's logs/
     // folder (Wine path, forward slashes), matching native naming.
-    let logs_dir = build_dir.join("logs");
+    let logs_dir = exe_dir.join("logs");
     let _ = std::fs::create_dir_all(&logs_dir);
     let log_path = logs_dir.join(next_log_name(&logs_dir, game));
     proton_args.push(format!("--log_file=Z:{}", log_path.to_string_lossy()));
@@ -831,7 +832,7 @@ fn play_with_proton(
     cmd.arg("run");
     cmd.arg(exe_path);
     cmd.args(&proton_args);
-    cmd.current_dir(build_dir);
+    cmd.current_dir(exe_dir);
     cmd.env("STEAM_COMPAT_DATA_PATH", &compat_data);
     cmd.env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_compat_client);
     cmd.stdin(std::process::Stdio::null());
@@ -1041,6 +1042,10 @@ fn update_packages_sidecar(path: &Path, asset: &str) {
 }
 
 /// Find the main executable in a game directory after archive extraction.
+///
+/// Searches the root of `dir` first, then one level of subdirectories (for
+/// zips that package everything inside a folder). Returns a relative path
+/// using `/` as separator, e.g. `"game.exe"` or `"game-folder/game.exe"`.
 fn find_main_executable(dir: &Path, game: &str) -> String {
     // Match either platform's packaging regardless of host: a Windows build
     // (`{game}.exe`) is valid on Linux too since it's routed through Proton at
@@ -1050,15 +1055,23 @@ fn find_main_executable(dir: &Path, game: &str) -> String {
 
     let mut exe_fallback = String::new();  // any `.exe` — a Windows build
     let mut elf_fallback = String::new();  // any extensionless executable — a Linux build
+    let mut subdirs: Vec<(String, PathBuf)> = Vec::new();
 
+    // Phase 1: scan the root of the extracted directory.
     let Ok(entries) = std::fs::read_dir(dir) else { return String::new() };
     for entry in entries.flatten() {
-        if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+        let Ok(ft) = entry.file_type() else { continue };
+        if ft.is_dir() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with('.') {
+                subdirs.push((name, entry.path()));
+            }
             continue;
         }
+        if !ft.is_file() { continue }
         let fname = entry.file_name().to_string_lossy().into_owned();
         let lower = fname.to_lowercase();
-        if preferred.contains(&lower) {
+        if preferred.iter().any(|p| p == &lower) {
             return fname;
         }
         if exe_fallback.is_empty() && lower.ends_with(".exe") {
@@ -1074,6 +1087,34 @@ fn find_main_executable(dir: &Path, game: &str) -> String {
             }
             #[cfg(not(unix))]
             { elf_fallback = fname.clone(); }
+        }
+    }
+
+    // Phase 2: search one level of subdirectories (handles zips that package
+    // everything inside a folder rather than at the root).
+    for (subdir_name, subdir) in &subdirs {
+        let Ok(sub_entries) = std::fs::read_dir(subdir) else { continue };
+        for entry in sub_entries.flatten() {
+            if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) { continue }
+            let fname = entry.file_name().to_string_lossy().into_owned();
+            let lower = fname.to_lowercase();
+            if preferred.iter().any(|p| p == &lower) {
+                return format!("{}/{}", subdir_name, fname);
+            }
+            if exe_fallback.is_empty() && lower.ends_with(".exe") {
+                exe_fallback = format!("{}/{}", subdir_name, fname);
+            }
+            if elf_fallback.is_empty() && !fname.contains('.') {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if entry.metadata().map(|m| m.permissions().mode() & 0o111 != 0).unwrap_or(false) {
+                        elf_fallback = format!("{}/{}", subdir_name, fname);
+                    }
+                }
+                #[cfg(not(unix))]
+                { elf_fallback = format!("{}/{}", subdir_name, fname); }
+            }
         }
     }
 
@@ -1102,6 +1143,42 @@ pub fn json_extract_str(json: &str, key: &str) -> String {
         }
     }
     String::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn find_main_executable_flat_zip() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("mygame.exe"), b"MZ").unwrap();
+        std::fs::write(tmp.path().join("data.pak"), b"data").unwrap();
+        assert_eq!(find_main_executable(tmp.path(), "mygame"), "mygame.exe");
+    }
+
+    #[test]
+    fn find_main_executable_subfolder_zip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sub = tmp.path().join("mygame-v1.0-windows");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("mygame.exe"), b"MZ").unwrap();
+        std::fs::write(sub.join("data.pak"), b"data").unwrap();
+        assert_eq!(
+            find_main_executable(tmp.path(), "mygame"),
+            "mygame-v1.0-windows/mygame.exe"
+        );
+    }
+
+    #[test]
+    fn find_main_executable_prefers_root_over_subdir() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("mygame.exe"), b"MZ root").unwrap();
+        let sub = tmp.path().join("subfolder");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("mygame.exe"), b"MZ sub").unwrap();
+        assert_eq!(find_main_executable(tmp.path(), "mygame"), "mygame.exe");
+    }
 }
 
 /// Extract the SHA256 `digest` for a named asset from a GitHub API response.
