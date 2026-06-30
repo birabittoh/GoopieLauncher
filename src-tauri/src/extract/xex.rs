@@ -158,8 +158,8 @@ fn decompress_normal_lzx(
 // -- Optional header data -----------------------------------------------------
 
 struct ResourceInfo {
-    resource_va: u32,
-    resource_size: u32,
+    /// All (VA, size) pairs from the resource info struct (may have multiple entries).
+    entries: Vec<(u32, u32)>,
 }
 
 struct FileFormatInfo {
@@ -371,19 +371,29 @@ pub fn load_xdbf(xex_path: &Path) -> io::Result<Xdbf> {
 
         match key {
             0x000002FF => {
-                // Resource Info: file offset, struct is 0x14 bytes.
-                // +0x00: name (8 bytes, resource directory name, NOT the title id)
-                // +0x08: struct size (u32)
-                // +0x0C: resource VA (u32)
-                // +0x10: resource size (u32)
+                // Resource Info: file offset to a variable-length struct.
+                // +0x00: total struct size (u32)
+                // Per entry (16 bytes each, starting at +0x04):
+                //   +0x00: name (8 bytes, resource section name)
+                //   +0x08: resource VA (u32)
+                //   +0x0C: resource size (u32)
                 let off = value as usize;
-                if off + 0x14 > xex_data.len() {
+                if off + 4 > xex_data.len() {
                     return Err(invalid("resource info struct out of bounds"));
                 }
-                resource_info = Some(ResourceInfo {
-                    resource_va:   read_u32_be(&xex_data, off + 0x0C),
-                    resource_size: read_u32_be(&xex_data, off + 0x10),
-                });
+                let total_size = read_u32_be(&xex_data, off) as usize;
+                let num_entries = total_size.saturating_sub(4) / 16;
+                let mut entries = Vec::with_capacity(num_entries);
+                for e in 0..num_entries {
+                    let entry_off = off + 4 + e * 16;
+                    if entry_off + 16 > xex_data.len() {
+                        break;
+                    }
+                    let va = read_u32_be(&xex_data, entry_off + 8);
+                    let sz = read_u32_be(&xex_data, entry_off + 12);
+                    entries.push((va, sz));
+                }
+                resource_info = Some(ResourceInfo { entries });
             }
             0x00040006 => {
                 // Execution Info: file offset, xex2_opt_execution_info struct.
@@ -503,21 +513,21 @@ pub fn load_xdbf(xex_path: &Path) -> io::Result<Xdbf> {
         return Err(invalid("image base VA is zero"));
     }
 
-    let rva   = resource_info.resource_va.wrapping_sub(image_base) as usize;
-    let rsize = resource_info.resource_size as usize;
-
-    if rva + rsize > image.len() {
-        return Err(invalid(&format!(
-            "resource section out of bounds (offset {:#x}, size {:#x}, image len {:#x})",
-            rva, rsize, image.len()
-        )));
+    // Scan all resource entries for the one with XDBF magic.
+    let mut xdbf_bytes: Option<Vec<u8>> = None;
+    for (va, sz) in &resource_info.entries {
+        let rva   = va.wrapping_sub(image_base) as usize;
+        let rsize = *sz as usize;
+        if rsize < 0x18 || rva + rsize > image.len() {
+            continue;
+        }
+        if &image[rva..rva + 4] == b"XDBF" {
+            xdbf_bytes = Some(image[rva..rva + rsize].to_vec());
+            break;
+        }
     }
+    let xdbf_bytes = xdbf_bytes.ok_or_else(|| invalid("no XDBF resource found in any resource section"))?;
 
-    let xdbf_bytes = image[rva..rva + rsize].to_vec();
-
-    if xdbf_bytes.len() < 0x18 {
-        return Err(invalid("XDBF section too small for header"));
-    }
     if &xdbf_bytes[0..4] != b"XDBF" {
         return Err(invalid("bad XDBF magic"));
     }
