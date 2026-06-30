@@ -51,6 +51,12 @@ directories   = "5"
 # Use "sync" feature so all async fns become blocking calls — no tokio required.
 xdvdfs        = { version = "0.8", default-features = false, features = ["std", "read", "sync"] }
 
+# TOML parsing (achievement unlock-state files)
+toml          = "0.8"
+
+# Base64 encoding (achievement icon data URLs delivered over the bridge)
+base64        = "0.22"
+
 # Windows registry (config storage on Windows)
 # Windows .lnk shortcut creation
 [target.'cfg(windows)'.dependencies]

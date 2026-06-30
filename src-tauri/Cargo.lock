@@ -1642,6 +1642,7 @@ name = "goopie-launcher"
 version = "1.5.1"
 dependencies = [
  "aes",
+ "base64 0.22.1",
  "directories",
  "discord-rich-presence",
  "flate2",
@@ -1661,6 +1662,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tempfile",
+ "toml 0.8.2",
  "winreg 0.52.0",
  "xdvdfs",
  "zip",

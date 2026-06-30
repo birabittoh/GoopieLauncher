@@ -12,6 +12,7 @@ mod offline_site;
 mod paths;
 mod platform;
 mod proton;
+mod achievements;
 mod saves;
 mod shortcuts;
 mod vehicles;

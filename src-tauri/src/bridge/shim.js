@@ -141,6 +141,10 @@
   window.renameSave           = function (g, o, n) { return call('renameSave', [g, o, n]); };
   window.deleteCurrentSave    = function (g)       { return call('deleteCurrentSave', [g]); };
 
+  // ── Achievements ─────────────────────────────────────────────────────────────
+  window.getAchievements       = function (g) { return call('getAchievements', [g]); };
+  window.getAchievementSummary = function (g) { return call('getAchievementSummary', [g]); };
+
   // ── Vehicle browser (Nuts & Bolts) ───────────────────────────────────────────
   window.getVehicleCount  = function ()       { return call('getVehicleCount', []); };
   window.getVehicle       = function (i)      { return call('getVehicle', [i]); };

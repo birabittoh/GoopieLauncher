@@ -20,7 +20,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use crate::{config, discord, extract, games, launcher, offline_site, paths, platform, saves, shortcuts, vehicles};
+use crate::{achievements, config, discord, extract, games, launcher, offline_site, paths, platform, saves, shortcuts, vehicles};
 
 // ── Shared application state ─────────────────────────────────────────────────
 
@@ -680,6 +680,10 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
         "deleteSave"        => json!(saves::delete_save(&str_arg(&args, 0), &str_arg(&args, 1))),
         "renameSave"        => json!(saves::rename_save(&str_arg(&args, 0), &str_arg(&args, 1), &str_arg(&args, 2))),
         "deleteCurrentSave" => json!(saves::delete_current_save(&str_arg(&args, 0))),
+
+        // ── Achievements ──────────────────────────────────────────────────────
+        "getAchievements"       => json!(achievements::get_achievements(&str_arg(&args, 0))),
+        "getAchievementSummary" => json!(achievements::get_achievement_summary(&str_arg(&args, 0))),
 
         // ── Vehicle browser ───────────────────────────────────────────────────
         "getVehicleCount" => {
