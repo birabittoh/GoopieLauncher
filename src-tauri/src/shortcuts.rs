@@ -110,6 +110,12 @@ pub fn create(game: &str, title: &str, icon_url: &str) -> Result<(), String> {
         .ok_or_else(|| "Could not determine Desktop directory".to_string())?;
 
     let icon_path = if let Some(png) = resolve_icon_png(game, icon_url) {
+        // Keep the raw PNG on disk too
+        let png_path = games::game_root(game).join("assets").join(".shortcut-icon.png");
+        if let Err(e) = std::fs::write(&png_path, &png) {
+            eprintln!("[shortcuts] Failed to write .png: {}", e);
+        }
+
         let ico_path = games::game_root(game).join("assets").join(".shortcut-icon.ico");
         let ico_data = png_to_ico(&png);
         if let Err(e) = std::fs::write(&ico_path, &ico_data) {
