@@ -101,6 +101,7 @@ jobs:
           GOOPIE_OAUTH_CLIENT_ID: ${{ secrets.GOOPIE_OAUTH_CLIENT_ID }}
           GOOPIE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOPIE_OAUTH_CLIENT_SECRET }}
           GOOPIE_RELEASES_API: ${{ vars.GOOPIE_RELEASES_API }}
+          GOOPIE_DISCORD_CLIENT_ID: ${{ vars.GOOPIE_DISCORD_CLIENT_ID }}
 
       - name: Build (Windows)
         if: inputs.platform == 'windows'
@@ -110,6 +111,7 @@ jobs:
           GOOPIE_OAUTH_CLIENT_ID: ${{ secrets.GOOPIE_OAUTH_CLIENT_ID }}
           GOOPIE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOPIE_OAUTH_CLIENT_SECRET }}
           GOOPIE_RELEASES_API: ${{ vars.GOOPIE_RELEASES_API }}
+          GOOPIE_DISCORD_CLIENT_ID: ${{ vars.GOOPIE_DISCORD_CLIENT_ID }}
 
       # ── Stage artifacts with consistent hyphenated names ───────────────────
       - name: Stage artifacts (Linux)

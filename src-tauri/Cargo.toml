@@ -35,6 +35,9 @@ tar           = "0.4"
 flate2        = "1"
 sevenz-rust   = "0.6"
 
+# Discord Rich Presence (IPC, no async runtime required)
+discord-rich-presence = "1"
+
 # Native dialogs (ISO file picker, folder picker)
 rfd           = "0.15"
 

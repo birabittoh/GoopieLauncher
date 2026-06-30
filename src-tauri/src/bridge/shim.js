@@ -54,6 +54,10 @@
   window.GetLanguage     = function ()    { return call('GetLanguage', []); };
   window.SetLanguage     = function (l)   { return call('SetLanguage', [l]); };
 
+  // ── Discord Rich Presence ────────────────────────────────────────────────────
+  window.getDiscordPresenceEnabled = function ()    { return call('getDiscordPresenceEnabled', []); };
+  window.setDiscordPresenceEnabled = function (v)   { return call('setDiscordPresenceEnabled', [v]); };
+
   // ── Proton (Linux) ───────────────────────────────────────────────────────────
   // On non-Linux launchers these commands are present (bridge always compiles
   // them) but getProtonInstallations returns [] and the rest are no-ops.

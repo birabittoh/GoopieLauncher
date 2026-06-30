@@ -4,6 +4,7 @@ mod bridge;
 mod launcher;
 mod config;
 mod archive;
+mod discord;
 mod download;
 mod games;
 mod extract;
@@ -163,6 +164,13 @@ pub fn run() {
             // user action (`SelfUpdateLauncher`), unless the hidden
             // `AutoApplyUpdate` setting is enabled (then checks auto-apply).
             launcher::spawn_update_monitor(Arc::clone(&state_for_setup));
+
+            // Discord Rich Presence: announce "Browsing games" immediately, then
+            // keep retrying/re-applying in the background — this is what lets
+            // presence appear once Discord is launched after the launcher (its
+            // IPC pipe/socket doesn't exist until then).
+            discord::set_browsing(&state_for_setup);
+            discord::spawn_discord_monitor(Arc::clone(&state_for_setup));
 
             Ok(())
         })

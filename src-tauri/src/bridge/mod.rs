@@ -20,7 +20,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use crate::{config, extract, games, launcher, offline_site, paths, platform, saves, shortcuts, vehicles};
+use crate::{config, discord, extract, games, launcher, offline_site, paths, platform, saves, shortcuts, vehicles};
 
 // ── Shared application state ─────────────────────────────────────────────────
 
@@ -100,6 +100,11 @@ pub struct AppState {
     /// When true, the launcher was invoked via a shortcut (`--play`) and should
     /// exit once the launched game closes.
     pub exit_after_game: AtomicBool,
+    /// Discord Rich Presence connection + desired/last-applied state. Updated
+    /// from `launch_and_track`/`monitor_running_game`/`kill_running_game`
+    /// (browsing vs. playing) and from the `setDiscordPresenceEnabled` bridge
+    /// command (the Settings toggle). See `discord.rs`.
+    pub discord: Mutex<discord::DiscordManager>,
 }
 
 impl AppState {
@@ -122,6 +127,7 @@ impl AppState {
             last_extract_error: Mutex::new(None),
             auto_play_game: Mutex::new(None),
             exit_after_game: AtomicBool::new(false),
+            discord: Mutex::new(discord::DiscordManager::new(config::get_discord_presence_enabled())),
         }
     }
 
@@ -158,6 +164,11 @@ fn launch_and_track(state: &Arc<AppState>, game: String, build: String, cvar_arg
     };
 
     let session_id = state.next_session_id.fetch_add(1, Ordering::Relaxed);
+    if discord::presence_enabled_for_game(&game) {
+        discord::set_playing(state, &game, discord::now_epoch_secs());
+    } else {
+        discord::set_hidden(state);
+    }
     *state.running_game.lock().unwrap() = Some(RunningGame {
         session_id,
         game,
@@ -187,6 +198,7 @@ fn monitor_running_game(state: Arc<AppState>, session_id: u64) {
             Ok(Some(_status)) => {
                 *lock = None;
                 drop(lock);
+                discord::set_browsing(&state);
                 launcher::auto_apply_after_game_exit(&state);
                 if state.exit_after_game.load(Ordering::Relaxed) {
                     if let Some(window) = state.window.lock().unwrap().as_ref() {
@@ -548,7 +560,16 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
         // Kills the running game immediately ("all unsaved progress will be lost",
         // per the confirmation prompt the frontend shows before calling this).
         "closeGame" => {
-            json!(kill_running_game(state))
+            let was_running = kill_running_game(state);
+            if was_running {
+                // Only revert to "Browsing games" here, not inside
+                // `kill_running_game` itself — that fn is also called at the
+                // start of `launch_and_track` to swap games, where the
+                // immediately-following `set_playing` would otherwise cause a
+                // visible "Browsing" flicker on Discord between games.
+                discord::set_browsing(state);
+            }
+            json!(was_running)
         }
         // ── Launch error reporting ────────────────────────────────────────────
         // `Play` is fire-and-forget on a background thread, so a launch failure
@@ -736,6 +757,14 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
             if let Ok(s) = serde_json::to_string(&data) {
                 let _ = std::fs::write(paths::games_cache_file(), s);
             }
+            json!(true)
+        }
+
+        // ── Discord Rich Presence ────────────────────────────────────────────
+        "getDiscordPresenceEnabled" => json!(config::get_discord_presence_enabled()),
+        "setDiscordPresenceEnabled" => {
+            let enabled = args.first().and_then(|v| v.as_bool()).unwrap_or(true);
+            discord::set_enabled(state, enabled);
             json!(true)
         }
 

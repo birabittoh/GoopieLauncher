@@ -263,6 +263,43 @@ pub fn set_auto_apply_update(enabled: bool) {
     }
 }
 
+// ── Discord Rich Presence ────────────────────────────────────────────────────
+
+/// Whether the launcher should report "Browsing games"/"Playing X" to Discord
+/// Rich Presence. Defaults to `true` (opt-out, not opt-in) — see `discord.rs`.
+pub fn get_discord_presence_enabled() -> bool {
+    #[cfg(windows)]
+    {
+        use winreg::{enums::*, RegKey};
+        RegKey::predef(HKEY_CURRENT_USER)
+            .open_subkey("Software\\GoopieLauncher")
+            .ok()
+            .and_then(|key| key.get_value::<u32, _>("DiscordPresence").ok())
+            .map(|v| v != 0)
+            .unwrap_or(true)
+    }
+    #[cfg(not(windows))]
+    {
+        ini_read("DiscordPresence", "1") != "0"
+    }
+}
+
+pub fn set_discord_presence_enabled(enabled: bool) {
+    #[cfg(windows)]
+    {
+        use winreg::{enums::*, RegKey};
+        if let Ok((key, _)) = RegKey::predef(HKEY_CURRENT_USER)
+            .create_subkey("Software\\GoopieLauncher")
+        {
+            let _ = key.set_value("DiscordPresence", &(enabled as u32));
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        ini_write("DiscordPresence", if enabled { "1" } else { "0" });
+    }
+}
+
 // ── Proton (Linux) ───────────────────────────────────────────────────────────
 
 /// Whether the launcher should run Windows builds through Proton on Linux.
@@ -432,5 +469,17 @@ mod tests {
         assert_eq!(ini_read_at(&path, "AutoApplyUpdate", "0"), "1");
         ini_write_at(&path, "AutoApplyUpdate", "0");
         assert_eq!(ini_read_at(&path, "AutoApplyUpdate", "0"), "0");
+    }
+
+    #[test]
+    fn discord_presence_round_trips_as_0_or_1_and_defaults_to_enabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.ini");
+        // Default (key absent) is "1" — opt-out, not opt-in.
+        assert_eq!(ini_read_at(&path, "DiscordPresence", "1"), "1");
+        ini_write_at(&path, "DiscordPresence", "0");
+        assert_eq!(ini_read_at(&path, "DiscordPresence", "1"), "0");
+        ini_write_at(&path, "DiscordPresence", "1");
+        assert_eq!(ini_read_at(&path, "DiscordPresence", "1"), "1");
     }
 }
