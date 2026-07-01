@@ -47,7 +47,7 @@ enum Presence {
     Browsing,
     Playing {
         title: String,
-        /// `None` when the game has no `iconUrl` of its own — in that case we
+        /// `None` when the game has no `discordIconUrl` of its own — in that case we
         /// simply omit `large_image`, and Discord falls back to the
         /// application's own default icon (set in the Developer Portal),
         /// rather than us guessing at a hardcoded Goopie logo URL.
@@ -139,7 +139,7 @@ impl DiscordManager {
         // No `large_image`/`large_text` here: omitting them entirely makes
         // Discord fall back to the application's own default icon (set in the
         // Developer Portal) — both while browsing and for games with no
-        // `iconUrl` of their own.
+        // `discordIconUrl` of their own.
         let activity = match &self.desired {
             Presence::Browsing => Some(activity::Activity::new().details("Browsing games")),
             Presence::Playing { title, image, start_epoch_secs } => {
@@ -260,7 +260,7 @@ struct CachedGame {
     #[serde(rename = "recompName")]
     recomp_name: String,
     title: String,
-    #[serde(rename = "iconUrl")]
+    #[serde(rename = "discordIconUrl")]
     icon_url: Option<String>,
     /// Mirrors `Game.discordPresenceEnabled` from the website's data model.
     /// Missing/`false` = the game handles its own Rich Presence and the
@@ -289,8 +289,8 @@ fn find_cached_game(recomp_name: &str) -> Option<CachedGame> {
 /// Resolve `recomp_name` to a `(display title, image URL)` pair from the
 /// cached games catalogue.
 ///
-/// The image is the game's `iconUrl` (purpose-built for shortcuts/presence,
-/// set in the website's game editor) when non-empty, and `None` otherwise —
+/// The image is the game's `discordIconUrl` (set in the website's game editor)
+/// when non-empty, and `None` otherwise —
 /// callers treat `None` as "show the default Goopie icon" rather than
 /// guessing at cover art. Falls back to `recomp_name` itself as the title,
 /// and `None` for the image, when the cache is missing, unparsable, or
