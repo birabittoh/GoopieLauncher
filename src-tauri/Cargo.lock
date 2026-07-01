@@ -1639,7 +1639,7 @@ dependencies = [
 
 [[package]]
 name = "goopie-launcher"
-version = "1.5.1"
+version = "1.5.2"
 dependencies = [
  "aes",
  "base64 0.22.1",
