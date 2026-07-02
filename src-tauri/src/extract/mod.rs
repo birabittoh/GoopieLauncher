@@ -83,7 +83,7 @@ pub fn extract_base_game(game_name: &str, file_path: &str, expected_xex_sha: &st
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     format!(
-                        "default.xex checksum mismatch: expected {}…, got {}…",
+                        "This game's files don't match what's expected, likely because it's a different region or version than the one supported. (default.xex checksum mismatch: expected {}…, got {}…)",
                         &expected_xex_sha[..expected_xex_sha.len().min(12)],
                         &actual[..actual.len().min(12)],
                     ),

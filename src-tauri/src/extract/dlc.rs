@@ -24,7 +24,7 @@ pub fn install_update(game: &str, src_path: &str, expected_sha: &str) -> std::io
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(
-                    "Update checksum mismatch: expected {}…, got {}…",
+                    "This update file doesn't match what's expected, likely because it's a different region or version than the one supported. (Update checksum mismatch: expected {}…, got {}…)",
                     &expected_sha[..12], &actual[..12]
                 ),
             ));
