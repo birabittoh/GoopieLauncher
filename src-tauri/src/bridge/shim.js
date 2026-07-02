@@ -126,8 +126,12 @@
   window.OpenExternalLink = function (url)    { return call('OpenExternalLink', [url]); };
 
   // ── Shortcuts ───────────────────────────────────────────────────────────────
-  window.CreateShortcut    = function (g, t, i) { return call('CreateShortcut', [g, t, i]); };
-  window.shortcutExists    = function (g, t)    { return call('shortcutExists', [g, t]); };
+  window.desktopShortcutExists  = function (g, t)    { return call('desktopShortcutExists', [g, t]); };
+  window.appShortcutExists      = function (g, t)    { return call('appShortcutExists', [g, t]); };
+  window.CreateDesktopShortcut  = function (g, t, i) { return call('CreateDesktopShortcut', [g, t, i]); };
+  window.CreateAppShortcut      = function (g, t, i) { return call('CreateAppShortcut', [g, t, i]); };
+  window.RemoveDesktopShortcut  = function (g, t)    { return call('RemoveDesktopShortcut', [g, t]); };
+  window.RemoveAppShortcut      = function (g, t)    { return call('RemoveAppShortcut', [g, t]); };
   window.getAutoPlayGame   = function ()        { return call('getAutoPlayGame', []); };
   window.clearAutoPlayGame = function ()        { return call('clearAutoPlayGame', []); };
 

@@ -643,21 +643,53 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
         }
 
         // ── Shortcuts ────────────────────────────────────────────────────────
-        "CreateShortcut" => {
+        "desktopShortcutExists" => {
+            let game  = str_arg(&args, 0);
+            let title = str_arg(&args, 1);
+            json!(shortcuts::exists_desktop(&game, &title))
+        }
+        "appShortcutExists" => {
+            let game  = str_arg(&args, 0);
+            let title = str_arg(&args, 1);
+            json!(shortcuts::exists_applications(&game, &title))
+        }
+        "CreateDesktopShortcut" => {
             let game     = str_arg(&args, 0);
             let title    = str_arg(&args, 1);
             let icon_url = str_arg(&args, 2);
             std::thread::spawn(move || {
-                if let Err(e) = shortcuts::create(&game, &title, &icon_url) {
-                    eprintln!("[bridge] CreateShortcut error: {}", e);
+                if let Err(e) = shortcuts::create_desktop(&game, &title, &icon_url) {
+                    eprintln!("[bridge] CreateDesktopShortcut error: {}", e);
                 }
             });
             Value::Null
         }
-        "shortcutExists" => {
+        "CreateAppShortcut" => {
+            let game     = str_arg(&args, 0);
+            let title    = str_arg(&args, 1);
+            let icon_url = str_arg(&args, 2);
+            std::thread::spawn(move || {
+                if let Err(e) = shortcuts::create_applications(&game, &title, &icon_url) {
+                    eprintln!("[bridge] CreateAppShortcut error: {}", e);
+                }
+            });
+            Value::Null
+        }
+        "RemoveDesktopShortcut" => {
             let game  = str_arg(&args, 0);
             let title = str_arg(&args, 1);
-            json!(shortcuts::exists(&game, &title))
+            if let Err(e) = shortcuts::remove_desktop(&game, &title) {
+                eprintln!("[bridge] RemoveDesktopShortcut error: {}", e);
+            }
+            Value::Null
+        }
+        "RemoveAppShortcut" => {
+            let game  = str_arg(&args, 0);
+            let title = str_arg(&args, 1);
+            if let Err(e) = shortcuts::remove_applications(&game, &title) {
+                eprintln!("[bridge] RemoveAppShortcut error: {}", e);
+            }
+            Value::Null
         }
         "getAutoPlayGame" => {
             let lock = state.auto_play_game.lock().unwrap();
