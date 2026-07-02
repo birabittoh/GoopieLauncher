@@ -66,7 +66,15 @@ fn resolve_icon_png(game: &str, icon_url: &str) -> Option<Vec<u8>> {
 }
 
 /// Path to the running launcher executable.
+///
+/// When running inside an AppImage, `current_exe()` resolves to the binary
+/// extracted into the temporary squashfs mount, not the `.AppImage` file the
+/// user actually has on disk. The AppImage runtime always sets `$APPIMAGE` to
+/// the real file path, so prefer that when available.
 fn launcher_exe() -> Result<PathBuf, String> {
+    if let Ok(appimage) = std::env::var("APPIMAGE") {
+        return Ok(PathBuf::from(appimage));
+    }
     std::env::current_exe().map_err(|e| format!("Could not determine launcher path: {}", e))
 }
 
@@ -194,7 +202,7 @@ pub fn create(game: &str, title: &str, icon_url: &str) -> Result<(), String> {
         "[Desktop Entry]\n\
          Type=Application\n\
          Name={}\n\
-         Exec={} --play {}{}\n\
+         Exec=\"{}\" --play {}{}\n\
          Categories=Game;\n\
          Terminal=false\n",
         title, exe_str, game,
