@@ -11,18 +11,18 @@ use std::{
     sync::Arc,
 };
 
-use crate::{config, platform, AppState};
+use crate::{config, download, platform, AppState};
 
 /// Open a native file dialog, let the user pick a game file, then extract it to
 /// `<games>/<game_name>/assets/` on the calling thread.
 ///
 /// Detects the format (ISO vs XBLA) automatically from the file header.
-pub fn install_game(game_name: &str, iso_only: bool, state: Arc<AppState>) {
+pub fn install_game(game_name: &str, iso_only: bool, expected_xex_sha: &str, state: Arc<AppState>) {
     state
         .is_extracting
         .store(true, std::sync::atomic::Ordering::Relaxed);
 
-    let result = install_game_inner(game_name, iso_only);
+    let result = install_game_inner(game_name, iso_only, expected_xex_sha);
 
     state
         .is_extracting
@@ -40,7 +40,10 @@ pub fn install_game(game_name: &str, iso_only: bool, state: Arc<AppState>) {
 
 /// Extract a base-game file (ISO or STFS with default.xex) into `<games>/<game_name>/assets/`.
 /// Wipes the existing assets dir, creates it fresh, and cleans up on error.
-pub fn extract_base_game(game_name: &str, file_path: &str) -> std::io::Result<usize> {
+///
+/// When `expected_xex_sha` is non-empty, verifies the extracted `default.xex`'s
+/// SHA-256 against it and rolls back (removes the assets dir) on mismatch.
+pub fn extract_base_game(game_name: &str, file_path: &str, expected_xex_sha: &str) -> std::io::Result<usize> {
     let games_folder = config::get_games_folder();
     let dest = Path::new(&games_folder)
         .join(game_name)
@@ -72,6 +75,24 @@ pub fn extract_base_game(game_name: &str, file_path: &str) -> std::io::Result<us
         Err(e) => Err(e),
     };
 
+    let result = result.and_then(|count| {
+        if !expected_xex_sha.is_empty() {
+            let xex_path = dest.join("default.xex");
+            let actual = download::sha256_file(&xex_path.to_string_lossy()).unwrap_or_default();
+            if !actual.eq_ignore_ascii_case(expected_xex_sha) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "default.xex checksum mismatch: expected {}…, got {}…",
+                        &expected_xex_sha[..expected_xex_sha.len().min(12)],
+                        &actual[..actual.len().min(12)],
+                    ),
+                ));
+            }
+        }
+        Ok(count)
+    });
+
     if result.is_err() {
         let _ = std::fs::remove_dir_all(&dest);
     }
@@ -81,7 +102,7 @@ pub fn extract_base_game(game_name: &str, file_path: &str) -> std::io::Result<us
 
 /// Returns `Ok(count)` on success, `Err` on failure, or `None` if the user
 /// cancelled the file picker or the file doesn't exist.
-fn install_game_inner(game_name: &str, iso_only: bool) -> Option<std::io::Result<usize>> {
+fn install_game_inner(game_name: &str, iso_only: bool, expected_xex_sha: &str) -> Option<std::io::Result<usize>> {
     let file_path = platform::pick_game_file(iso_only)?;
 
     if !Path::new(&file_path).exists() {
@@ -89,7 +110,7 @@ fn install_game_inner(game_name: &str, iso_only: bool) -> Option<std::io::Result
         return None;
     }
 
-    Some(extract_base_game(game_name, &file_path))
+    Some(extract_base_game(game_name, &file_path, expected_xex_sha))
 }
 
 /// Route a dropped/picked file to the right installer (base game, update, or DLC).
@@ -105,13 +126,14 @@ pub fn install_asset_file(
     update_checksum: &str,
     dlc_names: &[String],
     allow_update: bool,
+    expected_xex_sha: &str,
     state: Arc<AppState>,
 ) {
     state
         .is_extracting
         .store(true, std::sync::atomic::Ordering::Relaxed);
 
-    let result = install_asset_file_inner(game_name, src_path, update_checksum, dlc_names, allow_update);
+    let result = install_asset_file_inner(game_name, src_path, update_checksum, dlc_names, allow_update, expected_xex_sha);
 
     state
         .is_extracting
@@ -132,6 +154,7 @@ fn install_asset_file_inner(
     update_checksum: &str,
     dlc_names: &[String],
     allow_update: bool,
+    expected_xex_sha: &str,
 ) -> std::io::Result<()> {
     if !Path::new(src_path).exists() {
         return Err(std::io::Error::new(
@@ -144,7 +167,7 @@ fn install_asset_file_inner(
         Ok(Format::Stfs) => {
             // Check if it has default.xex → base game
             if stfs::has_default_xex(src_path)? {
-                extract_base_game(game_name, src_path)?;
+                extract_base_game(game_name, src_path, expected_xex_sha)?;
                 return Ok(());
             }
             // Route by content_type
@@ -163,13 +186,13 @@ fn install_asset_file_inner(
                     dlc::install_dlc(game_name, src_path, dlc_names)?;
                 }
                 _ => {
-                    extract_base_game(game_name, src_path)?;
+                    extract_base_game(game_name, src_path, expected_xex_sha)?;
                 }
             }
             Ok(())
         }
         Ok(Format::Xdvdfs) | Err(_) => {
-            extract_base_game(game_name, src_path)?;
+            extract_base_game(game_name, src_path, expected_xex_sha)?;
             Ok(())
         }
     }
@@ -182,11 +205,12 @@ pub fn install_asset_pick(
     dlc_names: &[String],
     iso_only: bool,
     allow_update: bool,
+    expected_xex_sha: &str,
     state: Arc<AppState>,
 ) {
     let paths = platform::pick_game_files(iso_only);
     for path in paths {
-        install_asset_file(game_name, &path, update_checksum, dlc_names, allow_update, Arc::clone(&state));
+        install_asset_file(game_name, &path, update_checksum, dlc_names, allow_update, expected_xex_sha, Arc::clone(&state));
     }
 }
 
@@ -196,10 +220,11 @@ pub fn install_asset_files(
     update_checksum: &str,
     dlc_names: &[String],
     allow_update: bool,
+    expected_xex_sha: &str,
     state: Arc<AppState>,
 ) {
     for path in paths {
-        install_asset_file(game_name, path, update_checksum, dlc_names, allow_update, Arc::clone(&state));
+        install_asset_file(game_name, path, update_checksum, dlc_names, allow_update, expected_xex_sha, Arc::clone(&state));
     }
 }
 

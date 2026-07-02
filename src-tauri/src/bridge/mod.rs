@@ -406,8 +406,9 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
         "Install" => {
             let game_name = str_arg(&args, 0);
             let is_xbla = args.get(1).and_then(|v| v.as_bool()).unwrap_or(false);
+            let expected_xex_sha = str_arg(&args, 2);
             let state_clone = Arc::clone(state);
-            std::thread::spawn(move || extract::install_game(&game_name, !is_xbla, state_clone));
+            std::thread::spawn(move || extract::install_game(&game_name, !is_xbla, &expected_xex_sha, state_clone));
             Value::Null
         }
         "Uninstall" => {
@@ -432,9 +433,10 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or_default();
             let allow_update = bool_arg(&args, 4, true);
+            let expected_xex_sha = str_arg(&args, 5);
             let state_clone = Arc::clone(state);
             std::thread::spawn(move || {
-                extract::install_asset_file(&game, &path, &checksum, &dlc_names, allow_update, state_clone);
+                extract::install_asset_file(&game, &path, &checksum, &dlc_names, allow_update, &expected_xex_sha, state_clone);
             });
             Value::Null
         }
@@ -446,9 +448,10 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
                 .unwrap_or_default();
             let is_xbla = args.get(3).and_then(|v| v.as_bool()).unwrap_or(false);
             let allow_update = bool_arg(&args, 4, true);
+            let expected_xex_sha = str_arg(&args, 5);
             let state_clone = Arc::clone(state);
             std::thread::spawn(move || {
-                extract::install_asset_pick(&game, &checksum, &dlc_names, !is_xbla, allow_update, state_clone);
+                extract::install_asset_pick(&game, &checksum, &dlc_names, !is_xbla, allow_update, &expected_xex_sha, state_clone);
             });
             Value::Null
         }
@@ -462,9 +465,10 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or_default();
             let allow_update = bool_arg(&args, 4, true);
+            let expected_xex_sha = str_arg(&args, 5);
             let state_clone = Arc::clone(state);
             std::thread::spawn(move || {
-                extract::install_asset_files(&game, &paths, &checksum, &dlc_names, allow_update, state_clone);
+                extract::install_asset_files(&game, &paths, &checksum, &dlc_names, allow_update, &expected_xex_sha, state_clone);
             });
             Value::Null
         }

@@ -79,7 +79,7 @@
   window.getInstalledBuilds  = function (g)            { return call('getInstalledBuilds', [g]); };
 
   // ── Long-running ops (fire-and-forget; poll for progress) ────────────────────
-  window.Install         = function (g, x)             { return call('Install', [g, x]); };
+  window.Install         = function (g, x, s)          { return call('Install', [g, x, s]); };
   window.Uninstall       = function (g, b)             { return call('Uninstall', [g, b]); };
   window.UninstallAll    = function (g)                { return call('UninstallAll', [g]); };
   window.RemoveAssets    = function (g)                { return call('RemoveAssets', [g]); };
@@ -100,9 +100,9 @@
   window.IsPackageInstalled = function (g, b, z)       { return call('IsPackageInstalled', [g, b, z]); };
 
   // ── Update & DLC management ──────────────────────────────────────────────────
-  window.InstallAssetFile  = function (g, p, c, d, u) { return call('InstallAssetFile', [g, p, c, d, u]); };
-  window.InstallAssetPick  = function (g, c, d, x, u) { return call('InstallAssetPick', [g, c, d, x, u]); };
-  window.InstallAssetFiles = function (g, ps, c, d, u){ return call('InstallAssetFiles', [g, ps, c, d, u]); };
+  window.InstallAssetFile  = function (g, p, c, d, u, s) { return call('InstallAssetFile', [g, p, c, d, u, s]); };
+  window.InstallAssetPick  = function (g, c, d, x, u, s) { return call('InstallAssetPick', [g, c, d, x, u, s]); };
+  window.InstallAssetFiles = function (g, ps, c, d, u, s){ return call('InstallAssetFiles', [g, ps, c, d, u, s]); };
   window.isUpdateInstalled = function (g)          { return call('isUpdateInstalled', [g]); };
   window.RemoveUpdate      = function (g)          { return call('RemoveUpdate', [g]); };
   window.openUpdateFolder  = function (g)          { return call('openUpdateFolder', [g]); };
