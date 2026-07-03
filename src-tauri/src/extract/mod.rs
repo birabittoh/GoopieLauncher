@@ -1,6 +1,7 @@
 //! Xbox 360 game extraction: ISO (XDVDFS) and XBLA (STFS/LIVE) formats.
 
 pub mod dlc;
+pub mod drop;
 mod stfs;
 pub mod xex;
 mod xdvdfs;
@@ -98,6 +99,40 @@ pub fn extract_base_game(game_name: &str, file_path: &str, expected_xex_sha: &st
     }
 
     result
+}
+
+/// Extract a base-game file (ISO or STFS) into an arbitrary destination directory,
+/// with no wipe/verify/rollback semantics — just format-detect and extract.
+///
+/// Used by the drag-and-drop flow ([`drop`]), which extracts into a scratch temp
+/// directory first, hashes the result against the whole game catalogue, and only
+/// then commits it into a specific game's `assets/` dir via [`commit_assets`].
+pub fn extract_to_dir(file_path: &str, dest: &Path) -> std::io::Result<usize> {
+    std::fs::create_dir_all(dest)?;
+    match detect_format(file_path) {
+        Ok(Format::Xdvdfs) => xdvdfs::extract(file_path, dest),
+        Ok(Format::Stfs) => stfs::extract(file_path, dest),
+        Err(e) => Err(e),
+    }
+}
+
+/// Move an already-extracted assets directory (e.g. a temp dir from
+/// [`extract_to_dir`]) into `<games>/<game_name>/assets/`, replacing any
+/// existing assets for that game.
+///
+/// `src` must be on the same filesystem as the games folder (the drop flow
+/// stages its temp dir inside the games folder for exactly this reason), so
+/// the move is an instant rename rather than a slow copy.
+pub fn commit_assets(src: &Path, game_name: &str) -> std::io::Result<()> {
+    let games_folder = config::get_games_folder();
+    let game_root = Path::new(&games_folder).join(game_name);
+    std::fs::create_dir_all(&game_root)?;
+    let dest = game_root.join("assets");
+
+    if dest.exists() {
+        std::fs::remove_dir_all(&dest)?;
+    }
+    std::fs::rename(src, &dest)
 }
 
 /// Returns `Ok(count)` on success, `Err` on failure, or `None` if the user

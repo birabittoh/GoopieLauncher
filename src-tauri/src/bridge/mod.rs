@@ -94,6 +94,11 @@ pub struct AppState {
     /// channel the frontend uses to surface the failure (see `getLaunchError`).
     pub last_launch_error: Mutex<Option<String>>,
     pub last_extract_error: Mutex<Option<String>>,
+    /// Result of the most recent `ProcessDrops` batch (global drag-and-drop),
+    /// polled by the frontend via `getDropReport` and cleared on read.
+    pub drop_report: Mutex<Option<extract::drop::DropReport>>,
+    /// Human-readable "Processing N of M" status for the current drop batch.
+    pub drop_status: Mutex<String>,
     /// Game to auto-play on startup (set by `--play <recompName>` CLI arg).
     /// The website polls this once on mount, triggers Play, then clears it.
     pub auto_play_game: Mutex<Option<String>>,
@@ -125,6 +130,8 @@ impl AppState {
             update_checked: AtomicBool::new(false),
             last_launch_error: Mutex::new(None),
             last_extract_error: Mutex::new(None),
+            drop_report: Mutex::new(None),
+            drop_status: Mutex::new(String::new()),
             auto_play_game: Mutex::new(None),
             exit_after_game: AtomicBool::new(false),
             discord: Mutex::new(discord::DiscordManager::new(config::get_discord_presence_enabled())),
@@ -472,6 +479,33 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
             });
             Value::Null
         }
+        // ── Global drag-and-drop (catalogue-wide matching) ───────────────────
+        "ProcessDrops" => {
+            let paths: Vec<String> = args.get(0)
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
+            let focused_raw = str_arg(&args, 1);
+            let focused = if focused_raw.is_empty() { None } else { Some(focused_raw) };
+            let catalogue: Vec<extract::drop::CatalogueEntry> = args.get(2)
+                .and_then(|v| match v {
+                    Value::String(s) => serde_json::from_str(s).ok(),
+                    other => serde_json::from_value(other.clone()).ok(),
+                })
+                .unwrap_or_default();
+            let state_clone = Arc::clone(state);
+            std::thread::spawn(move || {
+                extract::drop::process_drops(&paths, focused, catalogue, state_clone);
+            });
+            Value::Null
+        }
+        "getDropReport" => {
+            match state.drop_report.lock().unwrap().take() {
+                Some(report) => json!(report),
+                None => Value::Null,
+            }
+        }
+        "getDropStatus" => json!(state.drop_status.lock().unwrap().clone()),
+
         "isUpdateInstalled" => {
             json!(games::is_update_installed(&str_arg(&args, 0)))
         }

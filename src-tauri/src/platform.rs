@@ -88,6 +88,20 @@ pub fn open_folder(path: &str) {
     let _ = with_clean_appimage_env(|| open::that(path));
 }
 
+/// Returns the free space (in bytes) on the filesystem containing `path`.
+/// `path` need not exist yet — only its nearest existing ancestor is queried.
+/// Returns `0` if the space can't be determined (missing drive, permissions, etc.),
+/// which callers should treat as "insufficient" rather than "unlimited".
+pub fn available_space(path: &str) -> u64 {
+    let mut probe = std::path::PathBuf::from(path);
+    while !probe.exists() {
+        if !probe.pop() {
+            return 0;
+        }
+    }
+    fs4::available_space(&probe).unwrap_or(0)
+}
+
 /// Show a native folder-picker dialog and return the selected path, or `None` if cancelled.
 pub fn pick_folder(title: &str) -> Option<String> {
     rfd::FileDialog::new()

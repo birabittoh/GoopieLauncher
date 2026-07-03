@@ -176,20 +176,36 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let WindowEvent::DragDrop(DragDropEvent::Drop { paths, .. }) = event {
-                let paths_json: Vec<String> = paths
-                    .iter()
-                    .map(|p| p.to_string_lossy().into_owned())
-                    .collect();
-                if let Ok(json) = serde_json::to_string(&paths_json) {
-                    let js = format!(
-                        "window.dispatchEvent(new CustomEvent('goopie:filedrop', {{ detail: {{ paths: {} }} }}))",
-                        json
-                    );
-                    for webview in window.webviews() {
-                        let _ = webview.eval(&js);
+            match event {
+                WindowEvent::DragDrop(DragDropEvent::Drop { paths, .. }) => {
+                    let paths_json: Vec<String> = paths
+                        .iter()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .collect();
+                    if let Ok(json) = serde_json::to_string(&paths_json) {
+                        let js = format!(
+                            "window.dispatchEvent(new CustomEvent('goopie:filedrop', {{ detail: {{ paths: {} }} }}))",
+                            json
+                        );
+                        for webview in window.webviews() {
+                            let _ = webview.eval(&js);
+                        }
                     }
                 }
+                // Drives the "drop files to install" overlay: shown on
+                // Enter/Over, cleared on Leave (Drop above also implies the
+                // drag session ended, but the frontend clears on drop itself).
+                WindowEvent::DragDrop(DragDropEvent::Enter { .. } | DragDropEvent::Over { .. }) => {
+                    for webview in window.webviews() {
+                        let _ = webview.eval("window.dispatchEvent(new CustomEvent('goopie:dragenter'))");
+                    }
+                }
+                WindowEvent::DragDrop(DragDropEvent::Leave { .. }) => {
+                    for webview in window.webviews() {
+                        let _ = webview.eval("window.dispatchEvent(new CustomEvent('goopie:dragleave'))");
+                    }
+                }
+                _ => {}
             }
         })
         // No tauri::command handlers — all native calls go through the bridge scheme.

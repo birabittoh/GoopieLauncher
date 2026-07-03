@@ -57,12 +57,15 @@ toml          = "0.8"
 # Base64 encoding (achievement icon data URLs delivered over the bridge)
 base64        = "0.22"
 
+# Temp directories (drag-and-drop staging)
+tempfile      = "3"
+
+# Disk free-space queries
+fs4           = "0.9"
+
 # Windows registry (config storage on Windows)
 # Windows .lnk shortcut creation
 [target.'cfg(windows)'.dependencies]
 winreg        = "0.52"
 junction      = "1"
 mslnk         = "0.1"
-
-[dev-dependencies]
-tempfile      = "3"

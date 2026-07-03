@@ -111,6 +111,15 @@
   window.openDlcFolder     = function (g, t, h)    { return call('openDlcFolder', [g, t, h]); };
   window.openBuildLogsFolder = function (g, b)     { return call('openBuildLogsFolder', [g, b]); };
 
+  // ── Global drag-and-drop (catalogue-wide matching) ───────────────────────────
+  // `catalogue` is a JSON string (or array) of trimmed Game entries — see
+  // extract::drop::CatalogueEntry for the expected fields. `focused` is the
+  // recompName of whatever game page is currently focused, or '' for none.
+  // Fire-and-forget; poll isExtracting/getDropStatus, then read getDropReport.
+  window.ProcessDrops  = function (paths, focused, catalogue) { return call('ProcessDrops', [paths, focused, catalogue]); };
+  window.getDropReport = function ()                          { return call('getDropReport', []); };
+  window.getDropStatus = function ()                          { return call('getDropStatus', []); };
+
   // ── Progress polling ─────────────────────────────────────────────────────────
   window.isExtracting        = function ()    { return call('isExtracting', []); };
   window.isUpdating          = function ()    { return call('isUpdating', []); };
