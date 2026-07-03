@@ -111,6 +111,18 @@
   window.openDlcFolder     = function (g, t, h)    { return call('openDlcFolder', [g, t, h]); };
   window.openBuildLogsFolder = function (g, b)     { return call('openBuildLogsFolder', [g, b]); };
 
+  // ── Mods ──────────────────────────────────────────────────────────────────
+  // installModArchives/pickModArchives are fire-and-forget (extraction runs
+  // on a background thread) — poll isInstallingMods, then read getModInstallReport.
+  window.getMods            = function (g)         { return call('getMods', [g]); };
+  window.setModsState       = function (g, mods)   { return call('setModsState', [g, mods]); };
+  window.installModArchives = function (g, p)      { return call('installModArchives', [g, p]); };
+  window.pickModArchives    = function (g)         { return call('pickModArchives', [g]); };
+  window.isInstallingMods   = function ()          { return call('isInstallingMods', []); };
+  window.getModInstallReport = function ()         { return call('getModInstallReport', []); };
+  window.removeMod          = function (g, id)     { return call('removeMod', [g, id]); };
+  window.openModsFolder     = function (g)         { return call('openModsFolder', [g]); };
+
   // ── Global drag-and-drop (catalogue-wide matching) ───────────────────────────
   // `catalogue` is a JSON string (or array) of trimmed Game entries — see
   // extract::drop::CatalogueEntry for the expected fields. `focused` is the

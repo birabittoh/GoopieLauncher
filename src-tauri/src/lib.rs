@@ -8,6 +8,7 @@ mod discord;
 mod download;
 mod games;
 mod extract;
+mod mods;
 mod offline_site;
 mod paths;
 mod platform;
@@ -124,6 +125,16 @@ pub fn run() {
     let token_for_scheme = token.clone();
     let state_for_setup = Arc::clone(&state);
 
+    // Tracks whether the drag session currently over the window is a real OS
+    // file drag (Explorer, etc.) as opposed to an in-page HTML5 drag — e.g.
+    // dragging a game cover `<img>` around the launcher's own UI. WebView2
+    // still raises the native Enter/Over/Leave sequence for those, but
+    // `Enter`'s `paths` is empty since there's no real file involved. Only
+    // `Enter` carries `paths`; `Over` doesn't, so this flag lets `Over`
+    // (which fires continuously while the drag is in progress) know which
+    // kind of session it belongs to. Reset on Leave/Drop.
+    let drag_has_files = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
     tauri::Builder::default()
         .manage(state)
         // Register custom schemes before .setup() so wry marks them as secure
@@ -175,9 +186,13 @@ pub fn run() {
 
             Ok(())
         })
-        .on_window_event(|window, event| {
+        .on_window_event(move |window, event| {
             match event {
                 WindowEvent::DragDrop(DragDropEvent::Drop { paths, .. }) => {
+                    drag_has_files.store(false, std::sync::atomic::Ordering::Relaxed);
+                    if paths.is_empty() {
+                        return; // in-page drag (e.g. a cover image), not a real file drop
+                    }
                     let paths_json: Vec<String> = paths
                         .iter()
                         .map(|p| p.to_string_lossy().into_owned())
@@ -195,12 +210,29 @@ pub fn run() {
                 // Drives the "drop files to install" overlay: shown on
                 // Enter/Over, cleared on Leave (Drop above also implies the
                 // drag session ended, but the frontend clears on drop itself).
-                WindowEvent::DragDrop(DragDropEvent::Enter { .. } | DragDropEvent::Over { .. }) => {
-                    for webview in window.webviews() {
-                        let _ = webview.eval("window.dispatchEvent(new CustomEvent('goopie:dragenter'))");
+                // Only real file drags (see `drag_has_files` above) show it —
+                // otherwise dragging a cover image around the launcher's own
+                // UI would pop the overlay and, since that kind of in-page
+                // drag never produces a window-level Leave, get stuck until
+                // the next real file drag happened to pass over the window.
+                WindowEvent::DragDrop(DragDropEvent::Enter { paths, .. }) => {
+                    let has_files = !paths.is_empty();
+                    drag_has_files.store(has_files, std::sync::atomic::Ordering::Relaxed);
+                    if has_files {
+                        for webview in window.webviews() {
+                            let _ = webview.eval("window.dispatchEvent(new CustomEvent('goopie:dragenter'))");
+                        }
+                    }
+                }
+                WindowEvent::DragDrop(DragDropEvent::Over { .. }) => {
+                    if drag_has_files.load(std::sync::atomic::Ordering::Relaxed) {
+                        for webview in window.webviews() {
+                            let _ = webview.eval("window.dispatchEvent(new CustomEvent('goopie:dragenter'))");
+                        }
                     }
                 }
                 WindowEvent::DragDrop(DragDropEvent::Leave { .. }) => {
+                    drag_has_files.store(false, std::sync::atomic::Ordering::Relaxed);
                     for webview in window.webviews() {
                         let _ = webview.eval("window.dispatchEvent(new CustomEvent('goopie:dragleave'))");
                     }

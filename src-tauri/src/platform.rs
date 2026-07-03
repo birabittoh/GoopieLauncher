@@ -136,3 +136,15 @@ pub fn pick_game_files(iso_only: bool) -> Vec<String> {
         .map(|p| p.to_string_lossy().into_owned())
         .collect()
 }
+
+/// Show a native multi-file picker filtered to `.zip` archives, for mod installs.
+pub fn pick_zip_files() -> Vec<String> {
+    rfd::FileDialog::new()
+        .set_title("Select mod archive(s)")
+        .add_filter("Zip archive", &["zip"])
+        .pick_files()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect()
+}

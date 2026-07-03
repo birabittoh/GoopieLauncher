@@ -126,7 +126,7 @@ fn migrate_builds_layout(game: &str) {
             if std::fs::create_dir_all(&dest).is_ok() {
                 for entry in entries {
                     let name = entry.file_name();
-                    if name == "assets" || name == "saves" || name == "builds" {
+                    if name == "assets" || name == "saves" || name == "builds" || name == "mods" {
                         continue;
                     }
                     let from = entry.path();
@@ -370,7 +370,7 @@ pub fn uninstall_all(game: &str) {
     let Ok(entries) = std::fs::read_dir(&root) else { return };
     for entry in entries.flatten() {
         let name = entry.file_name();
-        if name == "saves" || name == "assets" {
+        if name == "saves" || name == "assets" || name == "mods" {
             continue;
         }
         let _ = std::fs::remove_dir_all(entry.path())
@@ -704,6 +704,18 @@ pub fn resolve_launch(
         for token in cvar_args.split_whitespace() {
             args.push(token.to_string());
         }
+    }
+
+    // Mods are entirely disk-driven (see `crate::mods`): if `mods/` exists and
+    // has at least one enabled mod, hand the SDK the overlay root and the
+    // reconciled, priority-ordered enabled list. Independent of `set_data_root`/
+    // `mount_update` so this applies whether or not assets/update are mounted.
+    if let Some(enabled) = crate::mods::enabled_mods_arg(game) {
+        args.push(format!(
+            "--mods_data_root={}",
+            crate::mods::mods_dir(game).to_string_lossy()
+        ));
+        args.push(format!("--enabled_mods={}", enabled));
     }
 
     // On Linux, transparently route Windows PE executables through Proton.

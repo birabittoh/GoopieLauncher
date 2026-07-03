@@ -110,6 +110,15 @@ pub struct AppState {
     /// (browsing vs. playing) and from the `setDiscordPresenceEnabled` bridge
     /// command (the Settings toggle). See `discord.rs`.
     pub discord: Mutex<discord::DiscordManager>,
+    /// Whether a mod-archive install (drop or Browse) is running in the
+    /// background — see `mods::install_archives_async`. Kept separate from
+    /// `is_extracting` so a mixed drop (mod zips + a base/update/DLC file in
+    /// the same drop) can't race: each activity toggles its own flag, and the
+    /// frontend waits for both to clear before reading either report.
+    pub mod_installing: AtomicBool,
+    /// Result of the most recent mod-archive install, polled by the frontend
+    /// via `getModInstallReport` and cleared on read.
+    pub mod_install_report: Mutex<Option<crate::mods::InstallReport>>,
 }
 
 impl AppState {
@@ -135,6 +144,8 @@ impl AppState {
             auto_play_game: Mutex::new(None),
             exit_after_game: AtomicBool::new(false),
             discord: Mutex::new(discord::DiscordManager::new(config::get_discord_presence_enabled())),
+            mod_installing: AtomicBool::new(false),
+            mod_install_report: Mutex::new(None),
         }
     }
 
@@ -336,6 +347,22 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
             .unwrap_or(default)
     }
 
+    /// Deserialize a structured argument that may arrive either as its native
+    /// JSON shape (array/object — the expected case) or, if a caller
+    /// mistakenly pre-`JSON.stringify()`s it before the shim's own
+    /// `JSON.stringify(args)` wraps the whole call, double-encoded as a JSON
+    /// string containing JSON. Tolerating both avoids silently discarding the
+    /// argument (`serde_json::from_value` on a `Value::String` where a
+    /// sequence/object is expected just fails, and `.ok()` swallows it).
+    fn json_arg<T: serde::de::DeserializeOwned + Default>(args: &[Value], i: usize) -> T {
+        match args.get(i) {
+            Some(Value::String(s)) => serde_json::from_str(s).ok(),
+            Some(other) => serde_json::from_value(other.clone()).ok(),
+            None => None,
+        }
+        .unwrap_or_default()
+    }
+
     match name {
         // ── Platform ──────────────────────────────────────────────────────────
         "GetPlatform"  => json!(platform::get_platform()),
@@ -530,6 +557,59 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
         }
         "openDlcFolder" => {
             extract::dlc::open_dlc_folder(&str_arg(&args, 0), &str_arg(&args, 1), &str_arg(&args, 2));
+            Value::Null
+        }
+
+        // ── Mods ──────────────────────────────────────────────────────────────
+        "getMods" => {
+            json!(crate::mods::list_mods(&str_arg(&args, 0)))
+        }
+        "setModsState" => {
+            let game = str_arg(&args, 0);
+            let entries: Vec<crate::mods::SidecarEntry> = json_arg(&args, 1);
+            crate::mods::set_state(&game, entries);
+            Value::Null
+        }
+        "installModArchives" => {
+            // Fire-and-forget: extraction can take several seconds for large
+            // mod zips, and this bridge call is a *synchronous* XHR — running
+            // it inline would freeze the whole webview. The frontend polls
+            // `isInstallingMods`/`getModInstallReport` instead (see
+            // `mods::install_archives_async`).
+            let game = str_arg(&args, 0);
+            let paths: Vec<String> = json_arg(&args, 1);
+            let state_clone = Arc::clone(state);
+            std::thread::spawn(move || crate::mods::install_archives_async(state_clone, game, paths));
+            Value::Null
+        }
+        "pickModArchives" => {
+            // The file dialog itself is a blocking modal the user is actively
+            // interacting with, so picking synchronously is fine — only the
+            // extraction afterward is offloaded. Returns `true` if an install
+            // was started (frontend should poll), `false` if the user picked
+            // nothing (dialog cancelled).
+            let game = str_arg(&args, 0);
+            let paths = crate::platform::pick_zip_files();
+            let started = !paths.is_empty();
+            if started {
+                let state_clone = Arc::clone(state);
+                std::thread::spawn(move || crate::mods::install_archives_async(state_clone, game, paths));
+            }
+            json!(started)
+        }
+        "isInstallingMods" => json!(state.mod_installing.load(Ordering::Relaxed)),
+        "getModInstallReport" => {
+            match state.mod_install_report.lock().unwrap().take() {
+                Some(r) => json!(r),
+                None => Value::Null,
+            }
+        }
+        "removeMod" => {
+            crate::mods::remove_mod(&str_arg(&args, 0), &str_arg(&args, 1));
+            Value::Null
+        }
+        "openModsFolder" => {
+            crate::mods::open_mods_folder(&str_arg(&args, 0));
             Value::Null
         }
         "Update" => {
