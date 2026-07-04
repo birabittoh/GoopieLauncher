@@ -241,15 +241,15 @@ pub fn self_update(state: Arc<AppState>) {
 
     let state_ref = Arc::clone(&state);
     let progress_cb: download::ProgressCallback = Box::new(move |dl, total| {
-        state_ref.set_download_progress(dl, total);
+        state_ref.set_launcher_update_progress(dl, total);
     });
 
     if let Err(e) = download::download_file(&url, &staging.to_string_lossy(), Some(&progress_cb)) {
         eprintln!("[launcher] download failed: {e:?}");
-        state.finish_download();
+        state.finish_launcher_update();
         return;
     }
-    state.finish_download();
+    state.finish_launcher_update();
 
     if let Err(e) = apply_update(&staging, &new_version) {
         eprintln!("[launcher] apply update failed: {e:?}");

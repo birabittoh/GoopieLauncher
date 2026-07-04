@@ -44,9 +44,14 @@
   // ── Launcher self-update ─────────────────────────────────────────────────────
   // `CheckForLauncherUpdate` is a cheap synchronous read of the cache kept
   // fresh by `launcher::spawn_update_monitor`; `SelfUpdateLauncher` kicks off
-  // the download/apply (progress polled via getDownloadProgress/-String above).
+  // the download/apply (progress polled via getLauncherUpdateProgress/-String
+  // below — kept separate from getDownloadProgress/-String, which track a
+  // game's own download, so the two never light up each other's UI).
   window.CheckForLauncherUpdate = function ()  { return call('CheckForLauncherUpdate', []); };
   window.SelfUpdateLauncher     = function ()  { return call('SelfUpdateLauncher', []); };
+  window.isLauncherUpdating              = function ()  { return call('isLauncherUpdating', []); };
+  window.getLauncherUpdateProgress       = function ()  { return call('getLauncherUpdateProgress', []); };
+  window.getLauncherUpdateProgressString = function ()  { return call('getLauncherUpdateProgressString', []); };
 
   // ── Config / paths ───────────────────────────────────────────────────────────
   window.GetGamesPath    = function ()    { return call('GetGamesPath', []); };

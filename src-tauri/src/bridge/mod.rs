@@ -51,10 +51,17 @@ pub struct RunningGame {
 }
 
 pub struct AppState {
-    /// Download progress: -1 = idle, 0-100 = percent.
+    /// Game download progress: -1 = idle, 0-100 = percent.
     pub download_progress: AtomicI32,
     /// Human-readable download progress string ("X MB / Y MB").
     pub download_string: Mutex<String>,
+    /// Launcher self-update download progress: -1 = idle, 0-100 = percent.
+    /// Kept separate from `download_progress` — they used to share one counter,
+    /// which made the game page's own "updating" progress bar light up (in
+    /// sync with the download) whenever the user updated the launcher itself.
+    pub launcher_update_progress: AtomicI32,
+    /// Human-readable launcher self-update progress string ("X MB / Y MB").
+    pub launcher_update_string: Mutex<String>,
     /// Whether an ISO extraction is currently in progress.
     pub is_extracting: AtomicBool,
     /// Cached vehicle list (for Nuts & Bolts save browser).
@@ -127,6 +134,8 @@ impl AppState {
         Self {
             download_progress: AtomicI32::new(-1),
             download_string: Mutex::new(String::new()),
+            launcher_update_progress: AtomicI32::new(-1),
+            launcher_update_string: Mutex::new(String::new()),
             is_extracting: AtomicBool::new(false),
             vehicles: Mutex::new(Vec::new()),
             google_signin: Mutex::new(GoogleSignInResult::Idle),
@@ -161,6 +170,21 @@ impl AppState {
     pub fn finish_download(&self) {
         self.download_progress.store(-1, Ordering::Relaxed);
         *self.download_string.lock().unwrap() = String::new();
+    }
+
+    /// Set launcher self-update progress and update its human-readable string.
+    /// See `launcher_update_progress` for why this is separate from `set_download_progress`.
+    pub fn set_launcher_update_progress(&self, downloaded: u64, total: u64) {
+        let pct = ((downloaded * 100).checked_div(total).unwrap_or(0)) as i32;
+        self.launcher_update_progress.store(pct, Ordering::Relaxed);
+        let mb_down = downloaded / (1024 * 1024);
+        let mb_total = total / (1024 * 1024);
+        *self.launcher_update_string.lock().unwrap() = format!("{} MB / {} MB", mb_down, mb_total);
+    }
+
+    pub fn finish_launcher_update(&self) {
+        self.launcher_update_progress.store(-1, Ordering::Relaxed);
+        *self.launcher_update_string.lock().unwrap() = String::new();
     }
 }
 
@@ -756,6 +780,9 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
         "isUpdating"          => json!(state.download_progress.load(Ordering::Relaxed) != -1),
         "getDownloadProgress" => json!(state.download_progress.load(Ordering::Relaxed)),
         "getDownloadString"   => json!(state.download_string.lock().unwrap().clone()),
+        "isLauncherUpdating"             => json!(state.launcher_update_progress.load(Ordering::Relaxed) != -1),
+        "getLauncherUpdateProgress"       => json!(state.launcher_update_progress.load(Ordering::Relaxed)),
+        "getLauncherUpdateProgressString" => json!(state.launcher_update_string.lock().unwrap().clone()),
         // Extract progress is not tracked per-file (xdvdfs doesn't report it);
         // return a placeholder that keeps the UI from hanging.
         "getExtractProgress"  => json!(50_i32),
