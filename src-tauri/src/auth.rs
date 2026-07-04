@@ -70,11 +70,96 @@ fn resolve_client_secret() -> Result<String, String> {
     })
 }
 
-/// Perform the full system-browser PKCE flow and return the Google `access_token`.
+/// Identity scopes requested by the normal sign-in flow (unchanged from before
+/// cloud-save-sync was added).
+const IDENTITY_SCOPES: &str = "openid email profile";
+
+/// Narrow Drive scope for cloud-save-sync: grants access only to the app's
+/// own hidden `appDataFolder` on the user's Drive — never the user's real
+/// files. Requested *in addition to* the identity scopes, and only the first
+/// time the user enables cloud saves for a game (see `cloud_saves.rs`), so
+/// players who never opt in are never shown a Drive consent screen.
+pub const DRIVE_APPDATA_SCOPE: &str = "https://www.googleapis.com/auth/drive.appdata";
+
+/// Result of a token exchange: the short-lived `access_token` used for API
+/// calls, plus a `refresh_token` when Google issued one (only guaranteed on
+/// the *first* consent for a given scope set, or when `prompt=consent` is
+/// forced — see `google_sign_in_with_scopes`).
+pub struct TokenResult {
+    pub access_token: String,
+    pub refresh_token: Option<String>,
+}
+
+/// Perform the full system-browser PKCE flow for the normal identity sign-in
+/// and return the Google `access_token`. Behavior is unchanged from before
+/// cloud-save-sync: identity scopes only, no forced consent screen.
 ///
 /// This blocks the calling thread until the user completes sign-in (or 5 min elapses).
 /// Always call from a background thread via `std::thread::spawn`.
 pub fn google_sign_in() -> Result<String, String> {
+    google_sign_in_with_scopes(IDENTITY_SCOPES, false).map(|t| t.access_token)
+}
+
+/// Perform the system-browser PKCE flow requesting identity + the Drive
+/// `appdata` scope, forcing the Google consent screen (`prompt=consent`) so a
+/// `refresh_token` is reliably issued even if the user has signed in before.
+/// Used the first time a user enables cloud saves for any game.
+///
+/// This blocks the calling thread until the user completes sign-in (or 5 min elapses).
+/// Always call from a background thread via `std::thread::spawn`.
+pub fn google_sign_in_drive() -> Result<TokenResult, String> {
+    let scopes = format!("{} {}", IDENTITY_SCOPES, DRIVE_APPDATA_SCOPE);
+    google_sign_in_with_scopes(&scopes, true)
+}
+
+/// Exchange a Drive refresh token for a fresh access token. Call this instead
+/// of re-running the full browser flow whenever a cached access token has (or
+/// is about to) expire.
+pub fn refresh_access_token(refresh_token: &str) -> Result<String, String> {
+    let client_id = resolve_client_id()?;
+    let client_secret = resolve_client_secret()?;
+
+    let body = format!(
+        "refresh_token={}&client_id={}&client_secret={}&grant_type=refresh_token",
+        url_encode(refresh_token),
+        url_encode(&client_id),
+        url_encode(&client_secret),
+    );
+
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .post("https://oauth2.googleapis.com/token")
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(body)
+        .send()
+        .map_err(|e| format!("Token refresh request failed: {}", e))?;
+
+    let status = resp.status();
+    let bytes = resp
+        .bytes()
+        .map_err(|e| format!("Token refresh read failed: {}", e))?;
+    let json: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("Token refresh response is not valid JSON: {}", e))?;
+
+    if !status.is_success() {
+        let msg = json["error_description"]
+            .as_str()
+            .or_else(|| json["error"].as_str())
+            .unwrap_or("unknown error");
+        return Err(format!("Token refresh failed ({}): {}", status.as_u16(), msg));
+    }
+
+    json["access_token"]
+        .as_str()
+        .map(|s| s.to_string())
+        .ok_or_else(|| "No access_token in token refresh response".to_string())
+}
+
+/// Core of both `google_sign_in` and `google_sign_in_drive`: run the
+/// loopback + PKCE flow for the given space-separated `scopes`, optionally
+/// forcing the consent screen (`prompt=consent`) so Google reliably issues a
+/// `refresh_token` alongside the `access_token`.
+fn google_sign_in_with_scopes(scopes: &str, force_consent: bool) -> Result<TokenResult, String> {
     let client_id = resolve_client_id()?;
     let client_secret = resolve_client_secret()?;
 
@@ -98,15 +183,17 @@ pub fn google_sign_in() -> Result<String, String> {
          ?response_type=code\
          &client_id={}\
          &redirect_uri={}\
-         &scope=openid%20email%20profile\
+         &scope={}\
          &code_challenge={}\
          &code_challenge_method=S256\
          &state={}\
-         &access_type=offline",
+         &access_type=offline{}",
         url_encode(&client_id),
         url_encode(&redirect_uri),
+        url_encode(scopes),
         challenge,
         state_nonce,
+        if force_consent { "&prompt=consent" } else { "" },
     );
 
     // Open the system browser (sanitizes the AppImage env first — see
@@ -181,7 +268,7 @@ fn exchange_code(
     client_secret: &str,
     redirect_uri: &str,
     verifier: &str,
-) -> Result<String, String> {
+) -> Result<TokenResult, String> {
     // Build the form body manually (avoids needing reqwest's "form" feature).
     // Google requires client_secret even for Desktop app PKCE flows.
     let body = format!(
@@ -217,10 +304,13 @@ fn exchange_code(
         return Err(format!("Token exchange failed ({}): {}", status.as_u16(), msg));
     }
 
-    json["access_token"]
+    let access_token = json["access_token"]
         .as_str()
         .map(|s| s.to_string())
-        .ok_or_else(|| "No access_token in token exchange response".to_string())
+        .ok_or_else(|| "No access_token in token exchange response".to_string())?;
+    let refresh_token = json["refresh_token"].as_str().map(|s| s.to_string());
+
+    Ok(TokenResult { access_token, refresh_token })
 }
 
 // ── PKCE helpers ──────────────────────────────────────────────────────────────

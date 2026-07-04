@@ -60,6 +60,19 @@ pub fn playtime_file() -> PathBuf {
     base.join("playtime.json")
 }
 
+/// Path to the on-disk cloud-save-sync state: the Google Drive refresh token
+/// (obtained via a separate, narrower-scoped consent than the main sign-in —
+/// see `auth::google_sign_in`) plus per-game sync bookkeeping (`enabled`,
+/// `lastSyncedHash`, `lastSyncedAt`, `driveFileId`). See `cloud_saves.rs`.
+/// Lives next to `playtime_file()`.
+pub fn cloud_saves_file() -> PathBuf {
+    let base = directories::BaseDirs::new()
+        .map(|d| d.data_local_dir().join("Goopie"))
+        .unwrap_or_else(|| PathBuf::from("."));
+    let _ = std::fs::create_dir_all(&base);
+    base.join("cloud-saves.json")
+}
+
 /// Documents directory.
 ///
 /// Mirrors the C++ launcher's `GetDocumentsPath_()`: prefer the user-configured

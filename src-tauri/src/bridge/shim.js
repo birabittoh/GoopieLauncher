@@ -180,6 +180,22 @@
   window.renameSave           = function (g, o, n) { return call('renameSave', [g, o, n]); };
   window.deleteCurrentSave    = function (g)       { return call('deleteCurrentSave', [g]); };
 
+  // ── Cloud save sync (Google Drive) ───────────────────────────────────────────
+  // `setCloudSaveEnabled(g, true)` returns `{ ok, needsConsent }`: if
+  // `needsConsent` is true, call `cloudSaveSignIn()` and poll
+  // `getCloudSaveSignInResult()` until status is "ok", then call
+  // `setCloudSaveEnabled(g, true)` again. `getCloudSaveStatus` is pollable
+  // (mirrors the getSaveSlots-style poll pattern) and drives the toggle/status
+  // line in the Save Manager panel. Sync itself otherwise happens
+  // automatically on game close/open — `syncCloudSaveNow`/`syncCloudSaveOnOpen`
+  // are just manual hooks (e.g. right after enabling, or on page open).
+  window.getCloudSaveStatus      = function (g)      { return call('getCloudSaveStatus', [g]); };
+  window.setCloudSaveEnabled     = function (g, e)   { return call('setCloudSaveEnabled', [g, e]); };
+  window.cloudSaveSignIn         = function ()       { return call('cloudSaveSignIn', []); };
+  window.getCloudSaveSignInResult = function ()      { return call('getCloudSaveSignInResult', []); };
+  window.syncCloudSaveNow        = function (g)      { return call('syncCloudSaveNow', [g]); };
+  window.syncCloudSaveOnOpen     = function (g)      { return call('syncCloudSaveOnOpen', [g]); };
+
   // ── Achievements ─────────────────────────────────────────────────────────────
   window.getAchievements       = function (g) { return call('getAchievements', [g]); };
   window.getAchievementSummary = function (g) { return call('getAchievementSummary', [g]); };

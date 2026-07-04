@@ -30,6 +30,8 @@
 
 use std::path::{Path, PathBuf};
 
+use sha2::{Digest, Sha256};
+
 use crate::{config, paths, platform};
 
 /// Fixed profile XUID the Rex runtime uses for the local user's content.
@@ -336,6 +338,246 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+// ── Cloud save export/import (for cloud_saves.rs) ─────────────────────────────
+//
+// Reuses the same trimmed-subtree convention as backup/restore (each title
+// ID's `00000001` + `Headers/00000001`, see the module doc above) so a
+// cloud-synced save behaves exactly like a local one.
+
+/// Zip the live save subtree for `game` plus a deterministic content hash over
+/// its files. Returns `None` if there's no live save data yet (nothing to
+/// sync). The hash is stable across machines — byte-identical save data always
+/// hashes the same — which is what lets sync skip no-op uploads.
+pub fn export_live_save_zip(game: &str) -> Option<(Vec<u8>, String)> {
+    let user_root = paths::rex_user_folder()?;
+    export_live_save_zip_at(&user_root, game)
+}
+
+fn export_live_save_zip_at(user_root: &Path, game: &str) -> Option<(Vec<u8>, String)> {
+    let profile_dir = layout::live_dir(user_root, game).join(PROFILE_XUID);
+    let entries = collect_save_entries(&profile_dir).ok()?;
+    if entries.is_empty() {
+        return None;
+    }
+    let hash = hash_entries(&entries);
+    let zip_bytes = zip_entries(&entries).ok()?;
+    Some((zip_bytes, hash))
+}
+
+/// Deterministic content hash of the live save subtree, or `None` if there's
+/// no live save data yet. Cheaper than `export_live_save_zip` when the caller
+/// only needs to know whether the save changed (skip re-uploading if the hash
+/// still matches what was last synced).
+pub fn live_save_hash(game: &str) -> Option<String> {
+    let user_root = paths::rex_user_folder()?;
+    live_save_hash_at(&user_root, game)
+}
+
+fn live_save_hash_at(user_root: &Path, game: &str) -> Option<String> {
+    let profile_dir = layout::live_dir(user_root, game).join(PROFILE_XUID);
+    let entries = collect_save_entries(&profile_dir).ok()?;
+    if entries.is_empty() {
+        return None;
+    }
+    Some(hash_entries(&entries))
+}
+
+/// Extract a zip produced by `export_live_save_zip` into `game`'s live save
+/// dir, replacing any existing save content for the title IDs present in the
+/// archive first — mirrors `restore_save`'s replace-in-place semantics, so no
+/// stray files from a previous save linger.
+pub fn import_save_zip(game: &str, bytes: &[u8]) -> bool {
+    let Some(user_root) = paths::rex_user_folder() else {
+        eprintln!("[saves] Could not determine the save user folder");
+        return false;
+    };
+    import_save_zip_at(&user_root, game, bytes)
+}
+
+fn import_save_zip_at(user_root: &Path, game: &str, bytes: &[u8]) -> bool {
+    let entries = match unzip_entries(bytes) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("[saves] import_save_zip: failed to read zip: {}", e);
+            return false;
+        }
+    };
+    if entries.is_empty() {
+        return false;
+    }
+
+    let profile_dir = layout::live_dir(&user_root, game).join(PROFILE_XUID);
+
+    let mut title_ids = std::collections::BTreeSet::new();
+    for (rel_path, _) in &entries {
+        if let Some(title_id) = rel_path.split('/').next() {
+            title_ids.insert(title_id.to_string());
+        }
+    }
+    for title_id in &title_ids {
+        let save_dir = profile_dir.join(title_id).join(SAVE_CONTENT_TYPE);
+        if save_dir.exists() {
+            if let Err(e) = std::fs::remove_dir_all(&save_dir) {
+                eprintln!("[saves] import_save_zip: failed to clear {}: {}", save_dir.display(), e);
+                return false;
+            }
+        }
+        let headers_dir = profile_dir.join(title_id).join("Headers").join(SAVE_CONTENT_TYPE);
+        if headers_dir.exists() {
+            if let Err(e) = std::fs::remove_dir_all(&headers_dir) {
+                eprintln!("[saves] import_save_zip: failed to clear {}: {}", headers_dir.display(), e);
+                return false;
+            }
+        }
+    }
+
+    for (rel_path, data) in &entries {
+        let dest = profile_dir.join(rel_path);
+        if let Some(parent) = dest.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                eprintln!("[saves] import_save_zip: failed to create {}: {}", parent.display(), e);
+                return false;
+            }
+        }
+        if let Err(e) = std::fs::write(&dest, data) {
+            eprintln!("[saves] import_save_zip: failed to write {}: {}", dest.display(), e);
+            return false;
+        }
+    }
+    true
+}
+
+/// Import a zip produced by `export_live_save_zip` directly into a *named
+/// slot* (not the live save) — used by cloud sync to preserve a save that's
+/// about to be superseded (a remote upload we haven't seen, or the local save
+/// before a pull overwrites it) without disturbing whatever's currently live.
+/// The result shows up as an ordinary save slot in the Save Manager.
+pub fn import_zip_as_slot(game: &str, bytes: &[u8], slot_name: &str) -> bool {
+    import_zip_as_slot_at(&games_root(), game, bytes, slot_name)
+}
+
+fn import_zip_as_slot_at(games_root: &Path, game: &str, bytes: &[u8], slot_name: &str) -> bool {
+    let entries = match unzip_entries(bytes) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("[saves] import_zip_as_slot: failed to read zip: {}", e);
+            return false;
+        }
+    };
+    if entries.is_empty() {
+        return false;
+    }
+    let dest = layout::saves_dir(games_root, game).join(slot_name);
+    for (rel_path, data) in &entries {
+        let path = dest.join(rel_path);
+        if let Some(parent) = path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                eprintln!("[saves] import_zip_as_slot: failed to create {}: {}", parent.display(), e);
+                return false;
+            }
+        }
+        if let Err(e) = std::fs::write(&path, data) {
+            eprintln!("[saves] import_zip_as_slot: failed to write {}: {}", path.display(), e);
+            return false;
+        }
+    }
+    true
+}
+
+/// Walk a `<live>/B13EBABEBABEBABE` profile dir and collect only the
+/// save-game content type for each title ID — `<title_id>/00000001/**` and
+/// `<title_id>/Headers/00000001/**` — as `(forward-slash relative path,
+/// bytes)` pairs, sorted by path for determinism (so the same save data
+/// always hashes/zips identically regardless of directory-listing order).
+fn collect_save_entries(profile_dir: &Path) -> std::io::Result<Vec<(String, Vec<u8>)>> {
+    let mut entries = Vec::new();
+    if !profile_dir.is_dir() {
+        return Ok(entries);
+    }
+    for title_entry in std::fs::read_dir(profile_dir)?.flatten() {
+        if !title_entry.file_type()?.is_dir() {
+            continue;
+        }
+        let title_dir = title_entry.path();
+        walk_dir_relative(&title_dir.join(SAVE_CONTENT_TYPE), profile_dir, &mut entries)?;
+        walk_dir_relative(&title_dir.join("Headers").join(SAVE_CONTENT_TYPE), profile_dir, &mut entries)?;
+    }
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(entries)
+}
+
+/// Recursively collect every file under `dir` as `(path relative to `base`
+/// with forward slashes, contents)`.
+fn walk_dir_relative(dir: &Path, base: &Path, out: &mut Vec<(String, Vec<u8>)>) -> std::io::Result<()> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(dir)?.flatten() {
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            walk_dir_relative(&path, base, out)?;
+        } else {
+            let rel = path.strip_prefix(base).unwrap_or(&path);
+            let rel_str = rel.to_string_lossy().replace('\\', "/");
+            out.push((rel_str, std::fs::read(&path)?));
+        }
+    }
+    Ok(())
+}
+
+/// Deterministic SHA-256 over a sorted `(path, bytes)` list — order and
+/// lengths are folded in so this can't collide across different directory
+/// shapes with the same concatenated bytes.
+fn hash_entries(entries: &[(String, Vec<u8>)]) -> String {
+    let mut hasher = Sha256::new();
+    for (path, data) in entries {
+        hasher.update(path.as_bytes());
+        hasher.update(b"\0");
+        hasher.update((data.len() as u64).to_le_bytes());
+        hasher.update(data);
+    }
+    hex::encode(hasher.finalize())
+}
+
+fn zip_entries(entries: &[(String, Vec<u8>)]) -> std::io::Result<Vec<u8>> {
+    use std::io::Write;
+    use zip::write::{SimpleFileOptions, ZipWriter};
+
+    let mut buf = Vec::new();
+    {
+        let cursor = std::io::Cursor::new(&mut buf);
+        let mut zw = ZipWriter::new(cursor);
+        let opts = SimpleFileOptions::default();
+        for (path, data) in entries {
+            zw.start_file(path, opts)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            zw.write_all(data)?;
+        }
+        zw.finish().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    }
+    Ok(buf)
+}
+
+fn unzip_entries(bytes: &[u8]) -> std::io::Result<Vec<(String, Vec<u8>)>> {
+    let cursor = std::io::Cursor::new(bytes);
+    let mut archive = zip::ZipArchive::new(cursor)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let mut entries = Vec::new();
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        if entry.name().ends_with('/') {
+            continue;
+        }
+        let name = entry.name().to_string();
+        let mut data = Vec::new();
+        std::io::Read::read_to_end(&mut entry, &mut data)?;
+        entries.push((name, data));
+    }
+    Ok(entries)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -569,6 +811,76 @@ mod tests {
 
         assert!(restore_save_at(&games_root, &user_root, GAME, "before-reset"));
         assert_eq!(std::fs::read(save_data_path(&user_root)).unwrap(), b"save-data-v1");
+    }
+
+    // ── Cloud save export/import ──────────────────────────────────────────────
+
+    #[test]
+    fn export_then_import_round_trips_the_live_save_byte_for_byte() {
+        let (_tmp, _games_root, user_root) = fixture();
+
+        let (zip_bytes, hash) = export_live_save_zip_at(&user_root, GAME)
+            .expect("live save data exists, export should succeed");
+        assert!(!zip_bytes.is_empty());
+        assert_eq!(live_save_hash_at(&user_root, GAME).unwrap(), hash, "hash should match what export reports");
+
+        // Mutate the live save so import has something to overwrite/detect.
+        let save_path = save_data_path(&user_root);
+        std::fs::write(&save_path, b"clobbered").unwrap();
+        let stale_path = save_path.parent().unwrap().join("stale.tmp");
+        std::fs::write(&stale_path, b"should be removed by import").unwrap();
+
+        assert!(import_save_zip_at(&user_root, GAME, &zip_bytes));
+
+        assert_eq!(std::fs::read(&save_path).unwrap(), b"save-data-v1");
+        assert!(!stale_path.exists(), "import should wipe the existing save content type before extracting");
+        assert_eq!(live_save_hash_at(&user_root, GAME).unwrap(), hash, "re-hashing the restored save should match");
+
+        // Unrelated data untouched by import.
+        let live = layout::live_dir(&user_root, GAME);
+        assert!(live.join("0000000000000000").join(TITLE_ID).join("00000002").join("somehash").join("dlcfile.bin").exists());
+        assert!(live.join("achievements").join(format!("{TITLE_ID}.toml")).exists());
+        assert!(live.join("cache").join("shaders").join("shareable").join("shader.bin").exists());
+    }
+
+    #[test]
+    fn export_and_hash_are_none_when_there_is_no_live_save_data() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let user_root = tmp.path().join("user"); // live dir intentionally not created
+        assert!(export_live_save_zip_at(&user_root, GAME).is_none());
+        assert!(live_save_hash_at(&user_root, GAME).is_none());
+    }
+
+    #[test]
+    fn hash_is_stable_regardless_of_directory_listing_order() {
+        let (_tmp, _games_root, user_root) = fixture();
+        let hash_a = live_save_hash_at(&user_root, GAME).unwrap();
+        let hash_b = live_save_hash_at(&user_root, GAME).unwrap();
+        assert_eq!(hash_a, hash_b);
+    }
+
+    #[test]
+    fn hash_changes_when_save_content_changes() {
+        let (_tmp, _games_root, user_root) = fixture();
+        let before = live_save_hash_at(&user_root, GAME).unwrap();
+        std::fs::write(save_data_path(&user_root), b"different-save-data").unwrap();
+        let after = live_save_hash_at(&user_root, GAME).unwrap();
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn import_zip_as_slot_writes_an_ordinary_browsable_slot() {
+        let (_tmp, games_root, user_root) = fixture();
+        let (zip_bytes, _hash) = export_live_save_zip_at(&user_root, GAME).unwrap();
+
+        assert!(import_zip_as_slot_at(&games_root, GAME, &zip_bytes, "cloud-backup-123"));
+
+        let slots = get_save_slots_at(&games_root, GAME);
+        assert!(slots.contains(&"cloud-backup-123".to_string()), "cloud backup should show up as an ordinary slot");
+
+        let slot = layout::saves_dir(&games_root, GAME).join("cloud-backup-123");
+        let copied_save = slot.join(TITLE_ID).join(SAVE_CONTENT_TYPE).join("0000000000000001").join("SaveData.bin");
+        assert_eq!(std::fs::read(copied_save).unwrap(), b"save-data-v1");
     }
 }
 

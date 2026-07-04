@@ -20,7 +20,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use crate::{achievements, config, discord, extract, games, launcher, offline_site, paths, platform, playtime, saves, shortcuts, vehicles};
+use crate::{achievements, cloud_saves, config, discord, extract, games, launcher, offline_site, paths, platform, playtime, saves, shortcuts, vehicles};
 
 // ── Shared application state ─────────────────────────────────────────────────
 
@@ -33,6 +33,22 @@ pub enum GoogleSignInResult {
     /// Sign-in succeeded; holds the Google access_token.
     Ok(String),
     /// Sign-in failed or was cancelled; holds an error message.
+    Err(String),
+}
+
+/// Result of the separate, narrower-scoped Drive-consent OAuth attempt run
+/// the first time a user enables cloud saves for any game (see
+/// `auth::google_sign_in_drive`). Unlike `GoogleSignInResult`, no token is
+/// exposed to the frontend: the spawned thread stores the refresh token
+/// directly via `cloud_saves::store_refresh_token` before setting this to `Ok`.
+pub enum DriveSignInResult {
+    /// No Drive consent flow has been started this session.
+    Idle,
+    /// Consent is in progress (system browser is open).
+    Pending,
+    /// Consent succeeded; the refresh token has already been persisted.
+    Ok,
+    /// Consent failed, was cancelled, or Google didn't grant offline access.
     Err(String),
 }
 
@@ -68,6 +84,9 @@ pub struct AppState {
     pub vehicles: Mutex<Vec<serde_json::Value>>,
     /// State of the native Google OAuth loopback flow.
     pub google_signin: Mutex<GoogleSignInResult>,
+    /// State of the separate Drive-consent OAuth loopback flow, run the first
+    /// time the user enables cloud saves for any game (see `cloud_saves.rs`).
+    pub cloud_drive_signin: Mutex<DriveSignInResult>,
     /// The currently-running game process, if any (polled by the frontend to
     /// drive the Play/Close button and the "close running game?" prompt).
     pub running_game: Mutex<Option<RunningGame>>,
@@ -139,6 +158,7 @@ impl AppState {
             is_extracting: AtomicBool::new(false),
             vehicles: Mutex::new(Vec::new()),
             google_signin: Mutex::new(GoogleSignInResult::Idle),
+            cloud_drive_signin: Mutex::new(DriveSignInResult::Idle),
             running_game: Mutex::new(None),
             next_session_id: AtomicU64::new(1),
             window: Mutex::new(None),
@@ -257,8 +277,14 @@ fn monitor_running_game(state: Arc<AppState>, session_id: u64) {
         match running.child.try_wait() {
             Ok(Some(_status)) => {
                 playtime::record_session(&running.game, running.started_at.elapsed().as_secs());
+                let game = running.game.clone();
                 *lock = None;
                 drop(lock);
+                // Push the save to Drive if cloud saves are enabled for this
+                // game and it changed — no-ops instantly otherwise (see
+                // `cloud_saves::sync_after_game_exit`). Spawned so a slow/failed
+                // upload never blocks the exit-handling thread.
+                std::thread::spawn(move || cloud_saves::sync_after_game_exit(&game));
                 discord::set_browsing(&state);
                 launcher::auto_apply_after_game_exit(&state);
                 if state.exit_after_game.load(Ordering::Relaxed) {
@@ -285,6 +311,13 @@ fn kill_running_game(state: &Arc<AppState>) -> bool {
     let mut lock = state.running_game.lock().unwrap();
     let Some(mut running) = lock.take() else { return false };
     playtime::record_session(&running.game, running.started_at.elapsed().as_secs());
+    // Same Drive push as the natural-exit path in `monitor_running_game` —
+    // this fn also runs for an explicit "Close" and for swapping to a
+    // different game, both of which end the session just as much as the
+    // game quitting on its own. Spawned so it never delays reaping the
+    // process or (on a swap) launching the next game.
+    let game = running.game.clone();
+    std::thread::spawn(move || cloud_saves::sync_after_game_exit(&game));
     if let Err(e) = running.child.kill() {
         eprintln!("[bridge] failed to kill running game: {}", e);
     }
@@ -884,6 +917,76 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
         "deleteSave"        => json!(saves::delete_save(&str_arg(&args, 0), &str_arg(&args, 1))),
         "renameSave"        => json!(saves::rename_save(&str_arg(&args, 0), &str_arg(&args, 1), &str_arg(&args, 2))),
         "deleteCurrentSave" => json!(saves::delete_current_save(&str_arg(&args, 0))),
+
+        // ── Cloud save sync (Google Drive appDataFolder) ─────────────────────
+        // `setCloudSaveEnabled` only requests the Drive-consent flow the first
+        // time *any* game is enabled (see `cloud_saves::has_drive_access`) —
+        // every game after that reuses the same stored refresh token, and
+        // `getCloudSaveStatus` is what the Save Manager polls to drive its
+        // toggle/status line (mirrors the getSaveSlots-style poll pattern).
+        "getCloudSaveStatus" => json!(cloud_saves::status(&str_arg(&args, 0))),
+        "setCloudSaveEnabled" => {
+            let game = str_arg(&args, 0);
+            let enabled = bool_arg(&args, 1, true);
+            if enabled && !cloud_saves::has_drive_access() {
+                json!({ "ok": false, "needsConsent": true })
+            } else {
+                cloud_saves::set_enabled(&game, enabled);
+                if enabled {
+                    // Sync immediately on enable rather than waiting for the
+                    // next game close, so the toggle feels responsive.
+                    std::thread::spawn(move || cloud_saves::sync_after_game_exit(&game));
+                }
+                json!({ "ok": true, "needsConsent": false })
+            }
+        }
+        // Fire-and-forget: opens the system browser for the Drive-scope
+        // consent screen. Poll `getCloudSaveSignInResult` every ~500ms until
+        // status is "ok" or "error", mirroring `GoogleSignIn` above.
+        "cloudSaveSignIn" => {
+            *state.cloud_drive_signin.lock().unwrap() = DriveSignInResult::Pending;
+            let state_clone = Arc::clone(state);
+            std::thread::spawn(move || {
+                let result = crate::auth::google_sign_in_drive();
+                let mut lock = state_clone.cloud_drive_signin.lock().unwrap();
+                *lock = match result {
+                    Ok(tokens) => match tokens.refresh_token {
+                        Some(refresh_token) => {
+                            cloud_saves::store_refresh_token(&refresh_token);
+                            DriveSignInResult::Ok
+                        }
+                        None => DriveSignInResult::Err(
+                            "Google didn't grant offline access — please try again.".to_string(),
+                        ),
+                    },
+                    Err(msg) => DriveSignInResult::Err(msg),
+                };
+            });
+            Value::Null
+        }
+        "getCloudSaveSignInResult" => {
+            let lock = state.cloud_drive_signin.lock().unwrap();
+            match &*lock {
+                DriveSignInResult::Idle    => json!({ "status": "idle" }),
+                DriveSignInResult::Pending => json!({ "status": "pending" }),
+                DriveSignInResult::Ok      => json!({ "status": "ok" }),
+                DriveSignInResult::Err(m)  => json!({ "status": "error", "message": m }),
+            }
+        }
+        // Manual "sync now" hooks for the Save Manager panel (enable toggle)
+        // and the game page (on open) — both otherwise happen automatically
+        // on game close/open, see the `cloud_saves::sync_after_game_exit`
+        // call sites in `monitor_running_game`/`kill_running_game` above.
+        "syncCloudSaveNow" => {
+            let game = str_arg(&args, 0);
+            std::thread::spawn(move || cloud_saves::sync_after_game_exit(&game));
+            Value::Null
+        }
+        "syncCloudSaveOnOpen" => {
+            let game = str_arg(&args, 0);
+            std::thread::spawn(move || cloud_saves::sync_on_open(&game));
+            Value::Null
+        }
 
         // ── Achievements ──────────────────────────────────────────────────────
         "getAchievements"       => json!(achievements::get_achievements(&str_arg(&args, 0))),
