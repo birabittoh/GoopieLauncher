@@ -173,6 +173,24 @@ fn launch_and_track(state: &Arc<AppState>, game: String, build: String, cvar_arg
     kill_running_game(state);
     *state.last_launch_error.lock().unwrap() = None;
 
+    // A broken enabled-mods layout (missing/misordered `requires`, an active
+    // `conflicts` pair, a code mod with no binary for this OS, ...) must never
+    // reach the SDK — it would hard-fail Setup() with a much less actionable
+    // message. Reuse the existing pollable launch-error channel so the
+    // frontend's Play flow needs no changes to surface this.
+    let validation = crate::mods::validate(&game);
+    if !validation.ok {
+        let reasons: Vec<&str> = validation.issues.iter()
+            .filter(|i| i.kind == "error")
+            .map(|i| i.message.as_str())
+            .collect();
+        *state.last_launch_error.lock().unwrap() = Some(format!(
+            "Can't launch: {}. Open Manage → Mods to fix.",
+            reasons.join(" ")
+        ));
+        return;
+    }
+
     let child = match games::play(&game, &build, &cvar_args, &custom_exe, set_data_root, mount_update) {
         Ok(child) => child,
         Err(msg) => {
@@ -610,6 +628,13 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
         }
         "openModsFolder" => {
             crate::mods::open_mods_folder(&str_arg(&args, 0));
+            Value::Null
+        }
+        "getModValidation" => {
+            json!(crate::mods::validate(&str_arg(&args, 0)))
+        }
+        "autoSortMods" => {
+            crate::mods::auto_sort(&str_arg(&args, 0));
             Value::Null
         }
         "Update" => {

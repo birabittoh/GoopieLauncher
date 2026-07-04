@@ -122,6 +122,12 @@
   window.getModInstallReport = function ()         { return call('getModInstallReport', []); };
   window.removeMod          = function (g, id)     { return call('removeMod', [g, id]); };
   window.openModsFolder     = function (g)         { return call('openModsFolder', [g]); };
+  // Validates the *enabled* mod set against requires/conflicts/load_after and
+  // per-platform code-mod availability. `Play` itself already enforces this
+  // (see getLaunchError) -- this is for the Mods panel to show the same
+  // reasons proactively, before the player even tries to launch.
+  window.getModValidation   = function (g)         { return call('getModValidation', [g]); };
+  window.autoSortMods       = function (g)         { return call('autoSortMods', [g]); };
 
   // ── Global drag-and-drop (catalogue-wide matching) ───────────────────────────
   // `catalogue` is a JSON string (or array) of trimmed Game entries — see

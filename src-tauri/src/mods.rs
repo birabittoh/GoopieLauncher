@@ -60,9 +60,10 @@ const CURRENT_MANIFEST_VERSION: u32 = 1;
 
 /// Optional per-mod metadata (`mod.toml`). All fields are optional — a mod
 /// with no manifest still works, falling back to its folder name and no
-/// icon/description. `requires` lists other mod ids (folder names) and is
-/// parsed and surfaced to the UI but not yet enforced (dependency enforcement
-/// is a deferred follow-up).
+/// icon/description. `requires`/`conflicts`/`load_after`/`platform` are each a
+/// comma-separated *string* in the file (matching the SDK's own
+/// `enabled_mods` convention — see `../rexglue-sdk/docs/mod-system.md`), not a
+/// TOML array; [`de_comma_list`] parses that shape into a `Vec<String>`.
 #[derive(Debug, Default, Deserialize)]
 struct Manifest {
     #[serde(default = "default_manifest_version")]
@@ -71,12 +72,42 @@ struct Manifest {
     version: Option<String>,
     author: Option<String>,
     description: Option<String>,
-    #[serde(default)]
+    /// DLL/SO stem under `code/`; present => this is a code mod. Its actual
+    /// value isn't used by the launcher (the SDK loads it by convention), only
+    /// whether it's set.
+    code: Option<String>,
+    /// Hard dependency: must be enabled and ordered before this mod, or the
+    /// SDK fails to start (see [`validate`]).
+    #[serde(default, deserialize_with = "de_comma_list")]
     requires: Vec<String>,
+    /// Hard mutual exclusion: the SDK fails to start if both are enabled.
+    #[serde(default, deserialize_with = "de_comma_list")]
+    conflicts: Vec<String>,
+    /// Soft ordering hint: only warned about if violated, never blocks.
+    #[serde(default, deserialize_with = "de_comma_list")]
+    load_after: Vec<String>,
+    /// Which platform(s) this code mod's `code/` currently ships a binary
+    /// for (e.g. `"windows-x64,linux-x64"`), written by the mod's own build
+    /// tooling. Meaningless for asset-only mods (no `code`).
+    #[serde(default, deserialize_with = "de_comma_list")]
+    platform: Vec<String>,
 }
 
 fn default_manifest_version() -> u32 {
     1
+}
+
+/// Parses a comma-separated list field (`requires = "a, b"`), the same shape
+/// the SDK itself uses for `enabled_mods`/`requires`/`conflicts`/`load_after`
+/// — trimmed of whitespace, empty segments dropped. Accepts a missing key
+/// (via `#[serde(default, ...)]` on the field) or an explicit empty string,
+/// both parsing to `vec![]`.
+fn de_comma_list<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s: String = Deserialize::deserialize(deserializer)?;
+    Ok(s.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect())
 }
 
 /// A single mod as surfaced to the website.
@@ -88,6 +119,13 @@ pub struct ModInfo {
     pub author: String,
     pub description: String,
     pub requires: Vec<String>,
+    pub conflicts: Vec<String>,
+    pub load_after: Vec<String>,
+    /// Platform target(s) this mod's `code/` ships a binary for (e.g.
+    /// `["windows-x64", "linux-x64"]`). Always empty for asset-only mods.
+    pub platform: Vec<String>,
+    /// `true` when the manifest declares a `code` stem (a native DLL/SO mod).
+    pub is_code: bool,
     pub enabled: bool,
     /// `data:image/png;base64,...` icon, or empty if the mod has no `icon.png`.
     pub icon: String,
@@ -237,11 +275,238 @@ pub fn list_mods(game: &str) -> Vec<ModInfo> {
                 author: manifest.author.unwrap_or_default(),
                 description: manifest.description.unwrap_or_default(),
                 requires: manifest.requires,
+                conflicts: manifest.conflicts,
+                load_after: manifest.load_after,
+                platform: manifest.platform,
+                is_code: manifest.code.map(|c| !c.is_empty()).unwrap_or(false),
                 enabled: entry.enabled,
                 icon: read_icon_data_url(game, &entry.id),
             }
         })
         .collect()
+}
+
+/// Which OS this launcher is running on, in the prefix convention a code
+/// mod's `platform` list uses (e.g. `"windows-x64"`) — see the `platform`
+/// section of `../rexglue-sdk/docs/mod-system.md`. Arch is ignored: mod
+/// platform ids are OS-keyed in practice (a mod either ships a binary for
+/// this OS or it doesn't).
+fn host_os() -> &'static str {
+    match std::env::consts::OS {
+        "windows" => "windows",
+        "macos" => "macos",
+        _ => "linux",
+    }
+}
+
+/// One problem found by [`validate`]: `"error"` blocks launch, `"warning"` is
+/// purely informational (matching the SDK's own `requires`-hard-fails /
+/// `load_after`-only-warns distinction).
+#[derive(Debug, Serialize)]
+pub struct Issue {
+    /// The mod id this issue is anchored to, for per-row UI highlighting.
+    pub id: String,
+    pub kind: &'static str,
+    pub message: String,
+}
+
+/// Result of [`validate`]: `ok` is `true` iff there are no `"error"`-kind
+/// issues, i.e. it's safe to build `--enabled_mods` and launch.
+#[derive(Debug, Serialize)]
+pub struct Validation {
+    pub ok: bool,
+    pub issues: Vec<Issue>,
+}
+
+fn err_issue(id: &str, message: String) -> Issue {
+    Issue { id: id.to_string(), kind: "error", message }
+}
+
+fn warn_issue(id: &str, message: String) -> Issue {
+    Issue { id: id.to_string(), kind: "warning", message }
+}
+
+/// Validate the *enabled* subset of `game`'s mods, singularly and together,
+/// against the SDK's dependency rules (`requires`/`conflicts`/`load_after`,
+/// see `../rexglue-sdk/docs/mod-system.md`), plus a launcher-specific check
+/// that a code mod actually ships a binary for this host OS. Disabled mods
+/// are never inspected — disabling (or deleting, or updating) a broken mod is
+/// always a valid way to resolve it, matching the SDK's own semantics where
+/// only `enabled_mods` is checked.
+pub fn validate(game: &str) -> Validation {
+    let entries = reconcile(game);
+    let enabled: Vec<(String, Manifest)> = entries
+        .iter()
+        .filter(|e| e.enabled)
+        .map(|e| (e.id.clone(), read_manifest(game, &e.id)))
+        .collect();
+    validate_enabled(&enabled)
+}
+
+/// Pure core of [`validate`]: takes the already-resolved enabled mods (in
+/// priority order) and their manifests, decoupled from disk/config so it's
+/// unit-testable without a games-folder fixture.
+fn validate_enabled(enabled: &[(String, Manifest)]) -> Validation {
+    let index_of = |id: &str| enabled.iter().position(|(mid, _)| mid == id);
+    let host = host_os();
+
+    let mut issues = Vec::new();
+
+    for (i, (id, m)) in enabled.iter().enumerate() {
+        if m.requires.iter().any(|r| r == id) {
+            issues.push(err_issue(id, format!("\"{id}\" lists itself in requires — remove the self-reference.")));
+        }
+        if m.conflicts.iter().any(|c| c == id) {
+            issues.push(err_issue(id, format!("\"{id}\" lists itself in conflicts — remove the self-reference.")));
+        }
+
+        let is_code = m.code.as_deref().is_some_and(|c| !c.is_empty());
+        if is_code {
+            if m.platform.is_empty() {
+                issues.push(err_issue(id, format!(
+                    "\"{id}\" is a code mod but declares no platform binaries; it can't load. Update or remove it."
+                )));
+            } else if !m.platform.iter().any(|p| p.starts_with(host)) {
+                issues.push(err_issue(id, format!(
+                    "\"{id}\" has no binary for this platform (ships: {}). Update, disable, or remove it.",
+                    m.platform.join(", ")
+                )));
+            }
+        }
+
+        for req in &m.requires {
+            if req == id {
+                continue; // already reported above
+            }
+            match index_of(req) {
+                None => issues.push(err_issue(id, format!(
+                    "\"{id}\" requires \"{req}\", which isn't enabled. Enable/install it, or disable \"{id}\"."
+                ))),
+                Some(j) if j > i => issues.push(err_issue(id, format!(
+                    "\"{req}\" must load before \"{id}\". Click Auto-sort, or drag it higher."
+                ))),
+                _ => {}
+            }
+        }
+
+        for after in &m.load_after {
+            if after == id {
+                continue;
+            }
+            match index_of(after) {
+                None => issues.push(warn_issue(id, format!(
+                    "\"{id}\" works better loaded after \"{after}\", which isn't enabled."
+                ))),
+                Some(j) if j > i => issues.push(warn_issue(id, format!(
+                    "\"{id}\" works better loaded after \"{after}\" (currently loads first)."
+                ))),
+                _ => {}
+            }
+        }
+    }
+
+    // `conflicts` is a hard error regardless of order or which side declares
+    // it — collect as unordered pairs first so a mutual (or one-sided)
+    // declaration only produces one issue per mod, not a duplicate.
+    let mut conflict_pairs: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+    for (id, m) in enabled {
+        for conf in &m.conflicts {
+            if conf != id && index_of(conf).is_some() {
+                let pair = if id < conf { (id.clone(), conf.clone()) } else { (conf.clone(), id.clone()) };
+                conflict_pairs.insert(pair);
+            }
+        }
+    }
+    for (a, b) in &conflict_pairs {
+        issues.push(err_issue(a, format!("\"{a}\" conflicts with \"{b}\". Disable or remove one of them.")));
+        issues.push(err_issue(b, format!("\"{b}\" conflicts with \"{a}\". Disable or remove one of them.")));
+    }
+
+    let ok = !issues.iter().any(|i| i.kind == "error");
+    Validation { ok, issues }
+}
+
+/// Stable dependency-respecting sort of `entries`: a mod named in another
+/// enabled mod's `requires` or `load_after` moves before it, resolving the
+/// order-type issues [`validate`] reports. Preserves existing relative order
+/// otherwise (a stable topological sort), so a user's manual priority survives
+/// except where a dependency forces a move. Disabled entries are left in
+/// their original absolute slot — only the *enabled* subset participates in
+/// the dependency graph, mirroring the SDK's "requires/load_after are checked
+/// against the `enabled_mods` index" contract. A cycle (only possible via
+/// `load_after`; a `requires` cycle can't exist per the SDK doc) is broken by
+/// falling back to original order for whichever node is stuck — the residual
+/// still surfaces as a `load_after` warning, never blocks.
+fn sort_entries(game: &str, entries: Vec<SidecarEntry>) -> Vec<SidecarEntry> {
+    let enabled_ids: Vec<String> = entries.iter().filter(|e| e.enabled).map(|e| e.id.clone()).collect();
+    let manifests: std::collections::HashMap<String, Manifest> =
+        enabled_ids.iter().map(|id| (id.clone(), read_manifest(game, id))).collect();
+    sort_entries_with(entries, &manifests)
+}
+
+/// Pure core of [`sort_entries`]: takes pre-fetched manifests, decoupled from
+/// disk/config so it's unit-testable without a games-folder fixture.
+fn sort_entries_with(entries: Vec<SidecarEntry>, manifests: &std::collections::HashMap<String, Manifest>) -> Vec<SidecarEntry> {
+    let enabled_ids: Vec<String> = entries.iter().filter(|e| e.enabled).map(|e| e.id.clone()).collect();
+
+    let default_manifest = Manifest::default();
+
+    // Edge "dep -> mod" for each requires/load_after target that's also enabled.
+    let deps: std::collections::HashMap<&str, Vec<&str>> = enabled_ids
+        .iter()
+        .map(|id| {
+            let m = manifests.get(id).unwrap_or(&default_manifest);
+            let wants: Vec<&str> = m
+                .requires
+                .iter()
+                .chain(m.load_after.iter())
+                .filter(|r| *r != id && enabled_ids.iter().any(|e| e == *r))
+                .map(|r| r.as_str())
+                .collect();
+            (id.as_str(), wants)
+        })
+        .collect();
+
+    // Stable Kahn's-algorithm topo sort: repeatedly take the earliest
+    // (by original order) node whose dependencies are all already placed;
+    // if none is ready (a cycle), take the earliest remaining node anyway so
+    // sorting always terminates instead of hanging or erroring.
+    let mut remaining: Vec<&str> = enabled_ids.iter().map(|s| s.as_str()).collect();
+    let mut placed: Vec<&str> = Vec::with_capacity(remaining.len());
+    while !remaining.is_empty() {
+        let idx = remaining
+            .iter()
+            .position(|id| deps[id].iter().all(|dep| placed.contains(dep)))
+            .unwrap_or(0);
+        placed.push(remaining.remove(idx));
+    }
+
+    // Rebuild the full list: enabled slots take the new order from `placed`;
+    // disabled entries keep their original absolute position.
+    let mut placed_iter = placed.into_iter();
+    entries
+        .into_iter()
+        .map(|e| {
+            if e.enabled {
+                let id = placed_iter.next().expect("placed has one entry per enabled id");
+                SidecarEntry { id: id.to_string(), enabled: true }
+            } else {
+                e
+            }
+        })
+        .collect()
+}
+
+/// Reorder `game`'s current mod list to satisfy dependency ordering
+/// (`requires`/`load_after`) as far as possible, and persist it. Used by the
+/// Mods panel's "Auto-sort" button, and called automatically after every mod
+/// install (see [`install_archives`]) so dropping several mods at once (e.g.
+/// a mod and the library it requires) lands them in a valid order without the
+/// player manually dragging rows.
+pub fn auto_sort(game: &str) {
+    let entries = reconcile(game);
+    let sorted = sort_entries(game, entries);
+    write_sidecar(game, &Sidecar { mods: sorted });
 }
 
 /// The `--enabled_mods` value for `game`: reconciled enabled ids in priority
@@ -404,7 +669,11 @@ pub fn install_archives(game: &str, paths: &[String]) -> InstallReport {
         }
     }
 
-    write_sidecar(game, &Sidecar { mods: entries });
+    // Auto-sort so a multi-mod drop (e.g. a mod alongside the library it
+    // `requires`) lands in a dependency-valid order without the player having
+    // to manually drag rows — see `sort_entries`.
+    let sorted = sort_entries(game, entries);
+    write_sidecar(game, &Sidecar { mods: sorted });
 
     InstallReport { results }
 }
@@ -608,5 +877,188 @@ mod tests {
         assert_eq!(entries[1], SidecarEntry { id: "hdost".into(), enabled: false });
         assert_eq!(entries[2], SidecarEntry { id: "newmod".into(), enabled: true });
         assert_eq!(entries.len(), 3, "the gone-from-disk entry must be dropped, not carried forward");
+    }
+
+    #[test]
+    fn de_comma_list_parses_a_comma_separated_string_field() {
+        let m: Manifest = toml::from_str("requires = \"game_symbols, other_mod\"\nconflicts = \"\"\n").unwrap();
+        assert_eq!(m.requires, vec!["game_symbols".to_string(), "other_mod".to_string()]);
+        assert_eq!(m.conflicts, Vec::<String>::new(), "an empty string parses to an empty list, not [\"\"]");
+    }
+
+    #[test]
+    fn de_comma_list_defaults_to_empty_when_the_key_is_absent() {
+        let m: Manifest = toml::from_str("name = \"Sample\"\n").unwrap();
+        assert!(m.requires.is_empty());
+        assert!(m.conflicts.is_empty());
+        assert!(m.load_after.is_empty());
+        assert!(m.platform.is_empty());
+    }
+
+    fn manifest(code: Option<&str>, requires: &[&str], conflicts: &[&str], load_after: &[&str], platform: &[&str]) -> Manifest {
+        Manifest {
+            code: code.map(str::to_string),
+            requires: requires.iter().map(|s| s.to_string()).collect(),
+            conflicts: conflicts.iter().map(|s| s.to_string()).collect(),
+            load_after: load_after.iter().map(|s| s.to_string()).collect(),
+            platform: platform.iter().map(|s| s.to_string()).collect(),
+            ..Manifest::default()
+        }
+    }
+
+    fn has_error(v: &Validation, id: &str) -> bool {
+        v.issues.iter().any(|i| i.kind == "error" && i.id == id)
+    }
+
+    fn has_warning(v: &Validation, id: &str) -> bool {
+        v.issues.iter().any(|i| i.kind == "warning" && i.id == id)
+    }
+
+    #[test]
+    fn validate_enabled_passes_a_clean_asset_only_layout() {
+        let enabled = vec![
+            ("badapple".to_string(), manifest(None, &[], &[], &[], &[])),
+            ("hdost".to_string(), manifest(None, &[], &[], &[], &[])),
+        ];
+        let v = validate_enabled(&enabled);
+        assert!(v.ok);
+        assert!(v.issues.is_empty());
+    }
+
+    #[test]
+    fn validate_enabled_flags_a_missing_requires_target() {
+        // ui_color requires game_symbols, but only ui_color is enabled.
+        let enabled = vec![("ui_color".to_string(), manifest(Some("ui_color"), &["game_symbols"], &[], &[], &[host_os_platform()]))];
+        let v = validate_enabled(&enabled);
+        assert!(!v.ok);
+        assert!(has_error(&v, "ui_color"));
+    }
+
+    #[test]
+    fn validate_enabled_flags_a_requires_ordered_after_its_dependency() {
+        // ui_color (index 0) requires game_symbols (index 1) -- wrong order.
+        let enabled = vec![
+            ("ui_color".to_string(), manifest(Some("ui_color"), &["game_symbols"], &[], &[], &[host_os_platform()])),
+            ("game_symbols".to_string(), manifest(Some("game_symbols"), &[], &[], &[], &[host_os_platform()])),
+        ];
+        let v = validate_enabled(&enabled);
+        assert!(!v.ok);
+        assert!(has_error(&v, "ui_color"));
+    }
+
+    #[test]
+    fn validate_enabled_passes_requires_in_correct_order() {
+        // game_symbols (index 0) loads before ui_color (index 1) -- correct.
+        let enabled = vec![
+            ("game_symbols".to_string(), manifest(Some("game_symbols"), &[], &[], &[], &[host_os_platform()])),
+            ("ui_color".to_string(), manifest(Some("ui_color"), &["game_symbols"], &[], &[], &[host_os_platform()])),
+        ];
+        let v = validate_enabled(&enabled);
+        assert!(v.ok, "issues: {:?}", v.issues);
+    }
+
+    #[test]
+    fn validate_enabled_flags_mutual_conflicts_on_both_mods() {
+        let enabled = vec![
+            ("mod_a".to_string(), manifest(None, &[], &["mod_b"], &[], &[])),
+            ("mod_b".to_string(), manifest(None, &[], &[], &[], &[])),
+        ];
+        let v = validate_enabled(&enabled);
+        assert!(!v.ok);
+        assert!(has_error(&v, "mod_a"));
+        assert!(has_error(&v, "mod_b"), "both sides of a conflict should be highlighted, even if only one declares it");
+    }
+
+    #[test]
+    fn validate_enabled_treats_load_after_violations_as_warnings_only() {
+        // mod_a wants to load after mod_b, but currently loads first -- a warning, not a block.
+        let enabled = vec![
+            ("mod_a".to_string(), manifest(None, &[], &[], &["mod_b"], &[])),
+            ("mod_b".to_string(), manifest(None, &[], &[], &[], &[])),
+        ];
+        let v = validate_enabled(&enabled);
+        assert!(v.ok, "load_after must never block launch");
+        assert!(has_warning(&v, "mod_a"));
+    }
+
+    #[test]
+    fn validate_enabled_flags_self_reference_in_requires_and_conflicts() {
+        let enabled = vec![("mod_a".to_string(), manifest(None, &["mod_a"], &["mod_a"], &[], &[]))];
+        let v = validate_enabled(&enabled);
+        assert!(!v.ok);
+        assert_eq!(v.issues.iter().filter(|i| i.kind == "error").count(), 2);
+    }
+
+    #[test]
+    fn validate_enabled_flags_a_code_mod_with_no_platform_binaries() {
+        let enabled = vec![("some_mod".to_string(), manifest(Some("some_mod"), &[], &[], &[], &[]))];
+        let v = validate_enabled(&enabled);
+        assert!(!v.ok);
+        assert!(has_error(&v, "some_mod"));
+    }
+
+    #[test]
+    fn validate_enabled_flags_a_code_mod_missing_this_hosts_binary() {
+        // Ships a binary, but never for the host this test runs on.
+        let other_os = if host_os() == "windows" { "linux-x64" } else { "windows-x64" };
+        let enabled = vec![("some_mod".to_string(), manifest(Some("some_mod"), &[], &[], &[], &[other_os]))];
+        let v = validate_enabled(&enabled);
+        assert!(!v.ok);
+        assert!(has_error(&v, "some_mod"));
+    }
+
+    #[test]
+    fn validate_enabled_passes_an_asset_only_mod_with_no_platform_declared() {
+        // No `code` key at all -- platform is simply irrelevant, not an error.
+        let enabled = vec![("badapple".to_string(), manifest(None, &[], &[], &[], &[]))];
+        let v = validate_enabled(&enabled);
+        assert!(v.ok);
+    }
+
+    fn host_os_platform() -> &'static str {
+        match host_os() {
+            "windows" => "windows-x64",
+            "macos" => "macos-x64",
+            _ => "linux-x64",
+        }
+    }
+
+    fn entries(pairs: &[(&str, bool)]) -> Vec<SidecarEntry> {
+        pairs.iter().map(|(id, enabled)| SidecarEntry { id: id.to_string(), enabled: *enabled }).collect()
+    }
+
+    #[test]
+    fn sort_entries_with_moves_a_dependency_before_its_dependent() {
+        // ui_color (requires game_symbols) is listed first -- wrong order.
+        let e = entries(&[("ui_color", true), ("game_symbols", true)]);
+        let mut manifests = std::collections::HashMap::new();
+        manifests.insert("ui_color".to_string(), manifest(Some("ui_color"), &["game_symbols"], &[], &[], &[host_os_platform()]));
+        manifests.insert("game_symbols".to_string(), manifest(Some("game_symbols"), &[], &[], &[], &[host_os_platform()]));
+
+        let sorted = sort_entries_with(e, &manifests);
+        let ids: Vec<&str> = sorted.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, vec!["game_symbols", "ui_color"]);
+    }
+
+    #[test]
+    fn sort_entries_with_is_stable_when_already_valid() {
+        let e = entries(&[("a", true), ("b", true), ("c", true)]);
+        let manifests = std::collections::HashMap::new();
+        let sorted = sort_entries_with(e, &manifests);
+        let ids: Vec<&str> = sorted.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, vec!["a", "b", "c"], "an already-valid order (no dependencies) must be left untouched");
+    }
+
+    #[test]
+    fn sort_entries_with_leaves_disabled_entries_in_their_original_slot() {
+        // "disabled_lib" is disabled, so it must NOT be pulled forward even
+        // though "consumer" requires it -- only the enabled subset is sorted.
+        let e = entries(&[("consumer", true), ("disabled_lib", false), ("other", true)]);
+        let mut manifests = std::collections::HashMap::new();
+        manifests.insert("consumer".to_string(), manifest(Some("consumer"), &["disabled_lib"], &[], &[], &[host_os_platform()]));
+        manifests.insert("other".to_string(), manifest(None, &[], &[], &[], &[]));
+
+        let sorted = sort_entries_with(e, &manifests);
+        assert_eq!(sorted[1], SidecarEntry { id: "disabled_lib".into(), enabled: false }, "disabled entries keep their absolute slot");
     }
 }
