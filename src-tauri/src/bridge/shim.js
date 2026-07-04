@@ -158,6 +158,7 @@
   // ── Folder operations ────────────────────────────────────────────────────────
   window.OpenGamesFolder  = function ()       { return call('OpenGamesFolder', []); };
   window.openSaveFolder   = function (g)      { return call('openSaveFolder', [g]); };
+  window.openBackupsFolder = function (g)     { return call('openBackupsFolder', [g]); };
   window.OpenExternalLink = function (url)    { return call('OpenExternalLink', [url]); };
 
   // ── Shortcuts ───────────────────────────────────────────────────────────────

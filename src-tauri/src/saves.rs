@@ -113,13 +113,25 @@ pub fn rename_save(game: &str, old_name: &str, new_name: &str) -> bool {
     rename_save_at(&games_root(), game, old_name, new_name)
 }
 
-// ── Open save folder ──────────────────────────────────────────────────────────
+// ── Open save/backups folders ─────────────────────────────────────────────────
 
+/// Open the live save folder — where the game itself actually reads/writes
+/// (the OS Documents folder on Windows, `$XDG_DATA_HOME`/`~/.local/share` on
+/// Linux/macOS — see `paths::rex_user_folder`).
 pub fn open_save_folder(game: &str) {
     let Some(user_root) = paths::rex_user_folder() else { return };
     let save_path = layout::live_dir(&user_root, game);
     let _ = std::fs::create_dir_all(&save_path);
     platform::open_folder(&save_path.to_string_lossy());
+}
+
+/// Open the backups folder — the named save slots created via "Backup"/
+/// "Create New Save" (`<games_root>/<game>/saves/`), distinct from the live
+/// save folder above.
+pub fn open_backups_folder(game: &str) {
+    let backups_path = layout::saves_dir(&games_root(), game);
+    let _ = std::fs::create_dir_all(&backups_path);
+    platform::open_folder(&backups_path.to_string_lossy());
 }
 
 fn games_root() -> PathBuf {

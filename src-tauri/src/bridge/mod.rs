@@ -842,6 +842,11 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
             saves::open_save_folder(&game);
             json!(true)
         }
+        "openBackupsFolder" => {
+            let game = str_arg(&args, 0);
+            saves::open_backups_folder(&game);
+            json!(true)
+        }
         "OpenExternalLink" => {
             platform::open_url(&str_arg(&args, 0));
             Value::Null
