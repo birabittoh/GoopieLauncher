@@ -20,7 +20,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use crate::{achievements, config, discord, extract, games, launcher, offline_site, paths, platform, saves, shortcuts, vehicles};
+use crate::{achievements, config, discord, extract, games, launcher, offline_site, paths, platform, playtime, saves, shortcuts, vehicles};
 
 // ── Shared application state ─────────────────────────────────────────────────
 
@@ -256,6 +256,7 @@ fn monitor_running_game(state: Arc<AppState>, session_id: u64) {
         }
         match running.child.try_wait() {
             Ok(Some(_status)) => {
+                playtime::record_session(&running.game, running.started_at.elapsed().as_secs());
                 *lock = None;
                 drop(lock);
                 discord::set_browsing(&state);
@@ -283,6 +284,7 @@ fn monitor_running_game(state: Arc<AppState>, session_id: u64) {
 fn kill_running_game(state: &Arc<AppState>) -> bool {
     let mut lock = state.running_game.lock().unwrap();
     let Some(mut running) = lock.take() else { return false };
+    playtime::record_session(&running.game, running.started_at.elapsed().as_secs());
     if let Err(e) = running.child.kill() {
         eprintln!("[bridge] failed to kill running game: {}", e);
     }
@@ -886,6 +888,9 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
         // ── Achievements ──────────────────────────────────────────────────────
         "getAchievements"       => json!(achievements::get_achievements(&str_arg(&args, 0))),
         "getAchievementSummary" => json!(achievements::get_achievement_summary(&str_arg(&args, 0))),
+
+        // ── Play-time (local-only, never synced to the cloud) ────────────────
+        "getPlaytime" => playtime::get_playtime(&str_arg(&args, 0)),
 
         // ── Vehicle browser ───────────────────────────────────────────────────
         "getVehicleCount" => {

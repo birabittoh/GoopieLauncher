@@ -14,6 +14,7 @@ mod paths;
 mod platform;
 mod proton;
 mod achievements;
+mod playtime;
 mod saves;
 mod shortcuts;
 mod vehicles;

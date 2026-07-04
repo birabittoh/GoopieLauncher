@@ -101,6 +101,9 @@
   // Returns null when there is no pending error.
   window.getLaunchError   = function ()   { return call('getLaunchError', []); };
   window.clearLaunchError = function ()   { return call('clearLaunchError', []); };
+  // Local-only per-game play-time total (never synced to the cloud). Returns
+  // null if the game has never been played.
+  window.getPlaytime = function (g) { return call('getPlaytime', [g]); };
   window.InstallPackage  = function (g, b, p, z, h, e) { return call('InstallPackage', [g, b, p, z, h, e]); };
   window.IsPackageInstalled = function (g, b, z)       { return call('IsPackageInstalled', [g, b, z]); };
 

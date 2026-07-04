@@ -48,6 +48,18 @@ pub fn games_cache_file() -> PathBuf {
     base.join("games-cache.json")
 }
 
+/// Path to the on-disk per-game play-time totals (`{ games: { [recompName]:
+/// { totalSeconds, lastPlayedAt } } }`), written locally by the launcher when
+/// a game session ends — never synced to the cloud (mirrors how achievements
+/// are stored). Lives next to `games_cache_file()`.
+pub fn playtime_file() -> PathBuf {
+    let base = directories::BaseDirs::new()
+        .map(|d| d.data_local_dir().join("Goopie"))
+        .unwrap_or_else(|| PathBuf::from("."));
+    let _ = std::fs::create_dir_all(&base);
+    base.join("playtime.json")
+}
+
 /// Documents directory.
 ///
 /// Mirrors the C++ launcher's `GetDocumentsPath_()`: prefer the user-configured
