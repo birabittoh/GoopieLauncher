@@ -6,8 +6,34 @@ on:
       - "v*"
 
 jobs:
+  verify-version:
+    name: Verify version bump
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check package.json, Cargo.toml, Cargo.lock, tauri.conf.json match tag
+        run: |
+          TAG="${{ github.ref_name }}"
+          EXPECTED="${TAG#v}"
+          PKG=$(node -p "require('./package.json').version")
+          CARGO=$(grep -m1 -E '^version\s*=' src-tauri/Cargo.toml | sed -E 's/version *= *"([^"]+)"/\1/')
+          LOCK=$(grep -A1 -m1 'name = "goopie-launcher"' src-tauri/Cargo.lock | grep version | sed -E 's/version *= *"([^"]+)"/\1/')
+          TAURI=$(node -p "require('./src-tauri/tauri.conf.json').version")
+
+          echo "Tag version:      $EXPECTED"
+          echo "package.json:     $PKG"
+          echo "Cargo.toml:       $CARGO"
+          echo "Cargo.lock:       $LOCK"
+          echo "tauri.conf.json:  $TAURI"
+
+          if [ "$PKG" != "$EXPECTED" ] || [ "$CARGO" != "$EXPECTED" ] || [ "$LOCK" != "$EXPECTED" ] || [ "$TAURI" != "$EXPECTED" ]; then
+            echo "::error::Version mismatch — package.json, Cargo.toml, Cargo.lock, and tauri.conf.json must all be bumped to $EXPECTED (use set-version.py)"
+            exit 1
+          fi
+
   build-website:
     name: Build offline site
+    needs: verify-version
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
