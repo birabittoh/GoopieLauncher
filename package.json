@@ -3,7 +3,9 @@
   "version": "1.6.1",
   "private": true,
   "scripts": {
-    "dev": "cargo tauri dev",
+    "dev": "node scripts/dev.js",
+    "dev:web": "npm run dev --prefix GoopieWebsite",
+    "dev:tauri": "cargo tauri dev -- -- --local",
     "build": "cargo tauri build",
     "tauri": "cargo tauri"
   },
