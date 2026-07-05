@@ -298,6 +298,21 @@ pub fn get_installed_builds(game: &str) -> Vec<serde_json::Value> {
     builds
 }
 
+/// The "installed game version" used to validate a mod's `game_version`
+/// constraint in the Mods panel (see `mods::validate`): the newest of
+/// `game`'s installed builds' `version` tags, or empty if nothing is
+/// installed. Launching a *specific* build instead compares against that
+/// build's own version (see `bridge::launch_and_track`), which is more
+/// precise when multiple builds are installed side by side.
+pub fn installed_game_version(game: &str) -> String {
+    get_installed_builds(game)
+        .into_iter()
+        .filter_map(|b| b["version"].as_str().map(str::to_string))
+        .filter(|v| !v.is_empty())
+        .max_by(|a, b| crate::mods::cmp_versions(a, b))
+        .unwrap_or_default()
+}
+
 // ── Update state ────────────────────────────────────────────────────────────
 
 /// Returns `true` if `<games>/<game>/update/` exists and is non-empty.

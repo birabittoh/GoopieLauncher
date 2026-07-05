@@ -56,7 +56,10 @@ struct Sidecar {
 /// `mod.toml` schema gains a field whose absence would change meaning (rather
 /// than just being ignored) — e.g. a semantics change to `requires`. Mods
 /// omit the field entirely today, which is treated as version 1.
-const CURRENT_MANIFEST_VERSION: u32 = 1;
+///
+/// Bumped to 2 for version-constrained `requires` entries (`"name >= x.y.z"`)
+/// and the new `game_version` key — see `../rexglue-sdk/docs/mod-system.md`.
+const CURRENT_MANIFEST_VERSION: u32 = 2;
 
 /// Optional per-mod metadata (`mod.toml`). All fields are optional — a mod
 /// with no manifest still works, falling back to its folder name and no
@@ -77,9 +80,10 @@ struct Manifest {
     /// whether it's set.
     code: Option<String>,
     /// Hard dependency: must be enabled and ordered before this mod, or the
-    /// SDK fails to start (see [`validate`]).
-    #[serde(default, deserialize_with = "de_comma_list")]
-    requires: Vec<String>,
+    /// SDK fails to start (see [`validate`]). Each entry may optionally pin a
+    /// minimum version of the named mod (`"name >= 1.0.0"`).
+    #[serde(default, deserialize_with = "de_requires")]
+    requires: Vec<ModRequirement>,
     /// Hard mutual exclusion: the SDK fails to start if both are enabled.
     #[serde(default, deserialize_with = "de_comma_list")]
     conflicts: Vec<String>,
@@ -91,6 +95,21 @@ struct Manifest {
     /// tooling. Meaningless for asset-only mods (no `code`).
     #[serde(default, deserialize_with = "de_comma_list")]
     platform: Vec<String>,
+    /// Minimum host application version, e.g. `"1.2.0"` or `">= 1.2.0"` (both
+    /// mean the same thing; no other comparison operator is supported). `None`
+    /// when the key is absent. See [`parse_game_version_constraint`].
+    game_version: Option<String>,
+}
+
+/// One `requires` entry: a dependency's folder name plus an optional
+/// "must be at least this version" constraint (`"name >= 1.0.0"`). A bare
+/// `"name"` (no `>=`) parses to `min_version: None`, meaning any enabled,
+/// correctly-ordered version satisfies it — matching the SDK's
+/// `rex::system::ModRequirement`.
+#[derive(Debug, Clone, PartialEq)]
+struct ModRequirement {
+    name: String,
+    min_version: Option<String>,
 }
 
 fn default_manifest_version() -> u32 {
@@ -108,6 +127,53 @@ where
 {
     let s: String = Deserialize::deserialize(deserializer)?;
     Ok(s.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect())
+}
+
+/// Splits one `requires` entry into a mod name and an optional minimum-version
+/// constraint: `"game_symbols >= 1.0.0"` -> `{name: "game_symbols",
+/// min_version: Some("1.0.0")}`; a bare `"game_symbols"` -> `min_version:
+/// None` (unconstrained). Mirrors the SDK's `ParseRequirement`.
+fn parse_requirement(entry: &str) -> ModRequirement {
+    match entry.split_once(">=") {
+        None => ModRequirement { name: entry.trim().to_string(), min_version: None },
+        Some((name, version)) => {
+            let version = version.trim();
+            ModRequirement {
+                name: name.trim().to_string(),
+                min_version: if version.is_empty() { None } else { Some(version.to_string()) },
+            }
+        }
+    }
+}
+
+/// Renders a [`ModRequirement`] back to display form for [`ModInfo::requires`]
+/// (`"name"` or `"name >= 1.0.0"`), the inverse of [`parse_requirement`].
+fn format_requirement(req: &ModRequirement) -> String {
+    match &req.min_version {
+        Some(v) => format!("{} >= {}", req.name, v),
+        None => req.name.clone(),
+    }
+}
+
+/// Parses `requires` (a comma-separated list, each entry optionally
+/// `"name >= x.y.z"`) into structured requirements. Builds on the same
+/// comma-splitting as [`de_comma_list`].
+fn de_requires<'de, D>(deserializer: D) -> Result<Vec<ModRequirement>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s: String = Deserialize::deserialize(deserializer)?;
+    Ok(s.split(',').map(str::trim).filter(|s| !s.is_empty()).map(parse_requirement).collect())
+}
+
+/// Parses `mod.toml`'s `game_version` key into a bare minimum-version string.
+/// Both `"1.2.0"` and `">= 1.2.0"` mean the same thing ("must be at least
+/// 1.2.0") — no other comparison operator is supported, matching the SDK's
+/// `ParseGameVersionConstraint`. Returns `None` for an absent/blank key.
+fn parse_game_version_constraint(value: Option<&str>) -> Option<String> {
+    let value = value?.trim();
+    let value = value.strip_prefix(">=").map(str::trim).unwrap_or(value);
+    if value.is_empty() { None } else { Some(value.to_string()) }
 }
 
 /// A single mod as surfaced to the website.
@@ -129,6 +195,9 @@ pub struct ModInfo {
     pub enabled: bool,
     /// `data:image/png;base64,...` icon, or empty if the mod has no `icon.png`.
     pub icon: String,
+    /// Minimum host application version this mod requires (e.g. `"1.2.0"`),
+    /// or empty if the manifest declares no `game_version`. See [`validate`].
+    pub game_version: String,
 }
 
 /// Report returned by [`install_archives`]: one entry per attempted file.
@@ -226,30 +295,57 @@ fn read_manifest(game: &str, id: &str) -> Manifest {
     read_manifest_at(&mods_dir(game).join(id).join(MANIFEST_NAME))
 }
 
-/// Lenient dotted-numeric version comparison for mod versions, which — unlike
-/// the launcher's own release tags — aren't guaranteed to be well-formed
-/// semver. Each dot/dash/plus-separated segment is compared as a number
-/// (non-numeric or missing segments count as 0), so `"1.2"` < `"1.10"` and a
-/// blank version is always the lowest. Returns `true` when `new` is greater
-/// than or equal to `existing`, including when both are equal or both blank
-/// (an unversioned mod is always safe to re-drop over itself).
-fn version_gte(new: &str, existing: &str) -> bool {
+/// Lenient dotted-numeric version comparison, used both for mod versions
+/// (which — unlike the launcher's own release tags — aren't guaranteed to be
+/// well-formed semver) and installed-build version tags (which may carry a
+/// leading `v`, e.g. `"v1.2.0"`). A leading `v`/`V` is stripped, then each
+/// dot/dash/plus-separated segment is compared as a number (non-numeric or
+/// missing segments count as 0), so `"1.2"` < `"1.10"` and `"1.0"` ==
+/// `"1.0.0"`. A blank version is always the lowest. Mirrors the SDK's
+/// `CompareVersions`/`ParseVersionComponents`.
+pub(crate) fn cmp_versions(a: &str, b: &str) -> std::cmp::Ordering {
     fn segments(s: &str) -> Vec<u64> {
+        let s = s.strip_prefix(['v', 'V']).unwrap_or(s);
         s.split(['.', '-', '+'])
             .map(|seg| seg.chars().take_while(|c| c.is_ascii_digit()).collect::<String>())
             .map(|digits| digits.parse::<u64>().unwrap_or(0))
             .collect()
     }
-    let a = segments(new);
-    let b = segments(existing);
-    for i in 0..a.len().max(b.len()) {
-        let av = a.get(i).copied().unwrap_or(0);
-        let bv = b.get(i).copied().unwrap_or(0);
-        if av != bv {
-            return av > bv;
+    let av = segments(a);
+    let bv = segments(b);
+    for i in 0..av.len().max(bv.len()) {
+        let x = av.get(i).copied().unwrap_or(0);
+        let y = bv.get(i).copied().unwrap_or(0);
+        let ord = x.cmp(&y);
+        if ord != std::cmp::Ordering::Equal {
+            return ord;
         }
     }
-    true
+    std::cmp::Ordering::Equal
+}
+
+/// Returns `true` when `new` is greater than or equal to `existing`,
+/// including when both are equal or both blank (an unversioned mod is always
+/// safe to re-drop over itself). Thin wrapper over [`cmp_versions`].
+fn version_gte(new: &str, existing: &str) -> bool {
+    cmp_versions(new, existing) != std::cmp::Ordering::Less
+}
+
+/// Whether `s` is a usable dotted-numeric version (optionally `v`-prefixed) —
+/// every `.`-separated segment non-empty and all-ASCII-digit, mirroring the
+/// SDK's `ParseVersionComponents`. Distinct from [`cmp_versions`], which is
+/// lenient (missing/non-numeric segments count as 0) so it can always compare
+/// two mod versions for the install-overwrite check; this stricter check
+/// instead decides whether a `game_version`/`requires` version *constraint*
+/// can be verified at all, per the SDK's "can't-verify -> warn, not error"
+/// contract.
+fn is_parseable_version(s: &str) -> bool {
+    let s = s.trim();
+    if s.is_empty() {
+        return false;
+    }
+    let s = s.strip_prefix(['v', 'V']).unwrap_or(s);
+    s.split('.').all(|seg| !seg.is_empty() && seg.chars().all(|c| c.is_ascii_digit()))
 }
 
 fn read_icon_data_url(game: &str, id: &str) -> String {
@@ -274,13 +370,14 @@ pub fn list_mods(game: &str) -> Vec<ModInfo> {
                 version: manifest.version.unwrap_or_default(),
                 author: manifest.author.unwrap_or_default(),
                 description: manifest.description.unwrap_or_default(),
-                requires: manifest.requires,
+                requires: manifest.requires.iter().map(format_requirement).collect(),
                 conflicts: manifest.conflicts,
                 load_after: manifest.load_after,
                 platform: manifest.platform,
                 is_code: manifest.code.map(|c| !c.is_empty()).unwrap_or(false),
                 enabled: entry.enabled,
                 icon: read_icon_data_url(game, &entry.id),
+                game_version: parse_game_version_constraint(manifest.game_version.as_deref()).unwrap_or_default(),
             }
         })
         .collect()
@@ -333,27 +430,34 @@ fn warn_issue(id: &str, message: String) -> Issue {
 /// are never inspected — disabling (or deleting, or updating) a broken mod is
 /// always a valid way to resolve it, matching the SDK's own semantics where
 /// only `enabled_mods` is checked.
-pub fn validate(game: &str) -> Validation {
+///
+/// `installed_game_version` is the version of the game build being checked
+/// against (see `games::installed_game_version`/`games::get_installed_version`),
+/// used to validate each enabled mod's `game_version` constraint. Pass an
+/// empty string if it's unknown (e.g. nothing installed yet) — that's treated
+/// the same as an unset `RuntimeConfig::game_version` on the SDK side: any
+/// mod declaring `game_version` gets a can't-verify warning, never an error.
+pub fn validate(game: &str, installed_game_version: &str) -> Validation {
     let entries = reconcile(game);
     let enabled: Vec<(String, Manifest)> = entries
         .iter()
         .filter(|e| e.enabled)
         .map(|e| (e.id.clone(), read_manifest(game, &e.id)))
         .collect();
-    validate_enabled(&enabled)
+    validate_enabled(&enabled, installed_game_version)
 }
 
 /// Pure core of [`validate`]: takes the already-resolved enabled mods (in
 /// priority order) and their manifests, decoupled from disk/config so it's
 /// unit-testable without a games-folder fixture.
-fn validate_enabled(enabled: &[(String, Manifest)]) -> Validation {
+fn validate_enabled(enabled: &[(String, Manifest)], installed_game_version: &str) -> Validation {
     let index_of = |id: &str| enabled.iter().position(|(mid, _)| mid == id);
     let host = host_os();
 
     let mut issues = Vec::new();
 
     for (i, (id, m)) in enabled.iter().enumerate() {
-        if m.requires.iter().any(|r| r == id) {
+        if m.requires.iter().any(|r| r.name == *id) {
             issues.push(err_issue(id, format!("\"{id}\" lists itself in requires — remove the self-reference.")));
         }
         if m.conflicts.iter().any(|c| c == id) {
@@ -375,17 +479,63 @@ fn validate_enabled(enabled: &[(String, Manifest)]) -> Validation {
         }
 
         for req in &m.requires {
-            if req == id {
+            if req.name == *id {
                 continue; // already reported above
             }
-            match index_of(req) {
+            match index_of(&req.name) {
                 None => issues.push(err_issue(id, format!(
-                    "\"{id}\" requires \"{req}\", which isn't enabled. Enable/install it, or disable \"{id}\"."
+                    "\"{id}\" requires \"{}\", which isn't enabled. Enable/install it, or disable \"{id}\".", req.name
                 ))),
                 Some(j) if j > i => issues.push(err_issue(id, format!(
-                    "\"{req}\" must load before \"{id}\". Click Auto-sort, or drag it higher."
+                    "\"{}\" must load before \"{id}\". Click Auto-sort, or drag it higher.", req.name
                 ))),
-                _ => {}
+                Some(j) => {
+                    // Correctly enabled and ordered — check the optional
+                    // version pin, if any. A constraint that can't be
+                    // verified (either side isn't a valid dotted version, or
+                    // the dependency has no `version` at all) is accepted
+                    // with a warning rather than blocking, mirroring the
+                    // SDK's `ValidateModDependencies`.
+                    if let Some(min_version) = &req.min_version {
+                        let (dep_id, dep_manifest) = &enabled[j];
+                        let dep_version = dep_manifest.version.as_deref().unwrap_or("");
+                        if !is_parseable_version(min_version) {
+                            issues.push(warn_issue(id, format!(
+                                "\"{id}\" requires \"{dep_id}\" >= {min_version}, but \"{min_version}\" isn't a valid version (e.g. \"1.0.0\") — can't verify."
+                            )));
+                        } else if !is_parseable_version(dep_version) {
+                            issues.push(warn_issue(id, format!(
+                                "\"{id}\" requires \"{dep_id}\" >= {min_version}, but \"{dep_id}\" has no valid version in its mod.toml — can't verify."
+                            )));
+                        } else if cmp_versions(dep_version, min_version) == std::cmp::Ordering::Less {
+                            issues.push(err_issue(id, format!(
+                                "\"{id}\" requires \"{dep_id}\" >= {min_version}, but the enabled \"{dep_id}\" is only version {dep_version}."
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(min_version) = parse_game_version_constraint(m.game_version.as_deref()) {
+            if !is_parseable_version(&min_version) {
+                issues.push(warn_issue(id, format!(
+                    "\"{id}\" has game_version = \"{min_version}\", which isn't a valid version (e.g. \"1.0.0\") — can't verify."
+                )));
+            } else if !is_parseable_version(installed_game_version) {
+                issues.push(warn_issue(id, format!(
+                    "\"{id}\" requires game v{min_version} or newer, but the installed game version is unknown — can't verify."
+                )));
+            } else {
+                match cmp_versions(installed_game_version, &min_version) {
+                    std::cmp::Ordering::Less => issues.push(err_issue(id, format!(
+                        "\"{id}\" requires game v{min_version} or newer; the installed game is v{installed_game_version}. Update the game, or disable this mod."
+                    ))),
+                    std::cmp::Ordering::Greater => issues.push(warn_issue(id, format!(
+                        "\"{id}\" targets game v{min_version}; the installed game is v{installed_game_version}, which may not be fully compatible."
+                    ))),
+                    std::cmp::Ordering::Equal => {}
+                }
             }
         }
 
@@ -459,9 +609,9 @@ fn sort_entries_with(entries: Vec<SidecarEntry>, manifests: &std::collections::H
             let wants: Vec<&str> = m
                 .requires
                 .iter()
-                .chain(m.load_after.iter())
+                .map(|r| r.name.as_str())
+                .chain(m.load_after.iter().map(|s| s.as_str()))
                 .filter(|r| *r != id && enabled_ids.iter().any(|e| e == *r))
-                .map(|r| r.as_str())
                 .collect();
             (id.as_str(), wants)
         })
@@ -837,6 +987,24 @@ mod tests {
     }
 
     #[test]
+    fn cmp_versions_strips_a_leading_v_prefix() {
+        use std::cmp::Ordering;
+        assert_eq!(cmp_versions("v1.2.0", "1.2.0"), Ordering::Equal);
+        assert_eq!(cmp_versions("V1.2.0", "1.1.0"), Ordering::Greater);
+        assert_eq!(cmp_versions("1.0", "1.0.0"), Ordering::Equal, "missing trailing components count as 0");
+    }
+
+    #[test]
+    fn is_parseable_version_accepts_dotted_numerics_and_rejects_everything_else() {
+        assert!(is_parseable_version("1.0.0"));
+        assert!(is_parseable_version("v1.2"));
+        assert!(!is_parseable_version(""));
+        assert!(!is_parseable_version("   "));
+        assert!(!is_parseable_version("not-a-version"));
+        assert!(!is_parseable_version("1.0.0-beta"), "a dash-qualified version isn't a plain dotted numeric");
+    }
+
+    #[test]
     fn reconcile_preserves_order_and_enabled_state_and_appends_new_disk_entries() {
         let tmp = tempfile::tempdir().unwrap();
         let mods_dir = tmp.path().join("mods");
@@ -882,8 +1050,28 @@ mod tests {
     #[test]
     fn de_comma_list_parses_a_comma_separated_string_field() {
         let m: Manifest = toml::from_str("requires = \"game_symbols, other_mod\"\nconflicts = \"\"\n").unwrap();
-        assert_eq!(m.requires, vec!["game_symbols".to_string(), "other_mod".to_string()]);
+        assert_eq!(m.requires, vec![
+            ModRequirement { name: "game_symbols".to_string(), min_version: None },
+            ModRequirement { name: "other_mod".to_string(), min_version: None },
+        ]);
         assert_eq!(m.conflicts, Vec::<String>::new(), "an empty string parses to an empty list, not [\"\"]");
+    }
+
+    #[test]
+    fn de_requires_parses_a_version_constrained_entry() {
+        let m: Manifest = toml::from_str("requires = \"game_symbols >= 1.0.0, other_mod\"\n").unwrap();
+        assert_eq!(m.requires, vec![
+            ModRequirement { name: "game_symbols".to_string(), min_version: Some("1.0.0".to_string()) },
+            ModRequirement { name: "other_mod".to_string(), min_version: None },
+        ]);
+    }
+
+    #[test]
+    fn parse_game_version_constraint_accepts_both_forms() {
+        assert_eq!(parse_game_version_constraint(Some("1.2.0")), Some("1.2.0".to_string()));
+        assert_eq!(parse_game_version_constraint(Some(">= 1.2.0")), Some("1.2.0".to_string()));
+        assert_eq!(parse_game_version_constraint(Some("  ")), None);
+        assert_eq!(parse_game_version_constraint(None), None);
     }
 
     #[test]
@@ -895,13 +1083,32 @@ mod tests {
         assert!(m.platform.is_empty());
     }
 
+    /// Builds a test `Manifest`. Each `requires` entry may be a bare id
+    /// (`"game_symbols"`) or carry a version pin (`"game_symbols >= 1.0.0"`),
+    /// parsed the same way [`de_requires`] parses the real `mod.toml` field.
     fn manifest(code: Option<&str>, requires: &[&str], conflicts: &[&str], load_after: &[&str], platform: &[&str]) -> Manifest {
+        manifest_versioned(code, requires, conflicts, load_after, platform, None, None)
+    }
+
+    /// Full-control variant of [`manifest`] that also sets `version` and
+    /// `game_version`, for the version-constraint tests.
+    fn manifest_versioned(
+        code: Option<&str>,
+        requires: &[&str],
+        conflicts: &[&str],
+        load_after: &[&str],
+        platform: &[&str],
+        version: Option<&str>,
+        game_version: Option<&str>,
+    ) -> Manifest {
         Manifest {
             code: code.map(str::to_string),
-            requires: requires.iter().map(|s| s.to_string()).collect(),
+            version: version.map(str::to_string),
+            requires: requires.iter().map(|s| parse_requirement(s)).collect(),
             conflicts: conflicts.iter().map(|s| s.to_string()).collect(),
             load_after: load_after.iter().map(|s| s.to_string()).collect(),
             platform: platform.iter().map(|s| s.to_string()).collect(),
+            game_version: game_version.map(str::to_string),
             ..Manifest::default()
         }
     }
@@ -920,7 +1127,7 @@ mod tests {
             ("badapple".to_string(), manifest(None, &[], &[], &[], &[])),
             ("hdost".to_string(), manifest(None, &[], &[], &[], &[])),
         ];
-        let v = validate_enabled(&enabled);
+        let v = validate_enabled(&enabled, "");
         assert!(v.ok);
         assert!(v.issues.is_empty());
     }
@@ -929,7 +1136,7 @@ mod tests {
     fn validate_enabled_flags_a_missing_requires_target() {
         // ui_color requires game_symbols, but only ui_color is enabled.
         let enabled = vec![("ui_color".to_string(), manifest(Some("ui_color"), &["game_symbols"], &[], &[], &[host_os_platform()]))];
-        let v = validate_enabled(&enabled);
+        let v = validate_enabled(&enabled, "");
         assert!(!v.ok);
         assert!(has_error(&v, "ui_color"));
     }
@@ -941,7 +1148,7 @@ mod tests {
             ("ui_color".to_string(), manifest(Some("ui_color"), &["game_symbols"], &[], &[], &[host_os_platform()])),
             ("game_symbols".to_string(), manifest(Some("game_symbols"), &[], &[], &[], &[host_os_platform()])),
         ];
-        let v = validate_enabled(&enabled);
+        let v = validate_enabled(&enabled, "");
         assert!(!v.ok);
         assert!(has_error(&v, "ui_color"));
     }
@@ -953,7 +1160,7 @@ mod tests {
             ("game_symbols".to_string(), manifest(Some("game_symbols"), &[], &[], &[], &[host_os_platform()])),
             ("ui_color".to_string(), manifest(Some("ui_color"), &["game_symbols"], &[], &[], &[host_os_platform()])),
         ];
-        let v = validate_enabled(&enabled);
+        let v = validate_enabled(&enabled, "");
         assert!(v.ok, "issues: {:?}", v.issues);
     }
 
@@ -963,7 +1170,7 @@ mod tests {
             ("mod_a".to_string(), manifest(None, &[], &["mod_b"], &[], &[])),
             ("mod_b".to_string(), manifest(None, &[], &[], &[], &[])),
         ];
-        let v = validate_enabled(&enabled);
+        let v = validate_enabled(&enabled, "");
         assert!(!v.ok);
         assert!(has_error(&v, "mod_a"));
         assert!(has_error(&v, "mod_b"), "both sides of a conflict should be highlighted, even if only one declares it");
@@ -976,7 +1183,7 @@ mod tests {
             ("mod_a".to_string(), manifest(None, &[], &[], &["mod_b"], &[])),
             ("mod_b".to_string(), manifest(None, &[], &[], &[], &[])),
         ];
-        let v = validate_enabled(&enabled);
+        let v = validate_enabled(&enabled, "");
         assert!(v.ok, "load_after must never block launch");
         assert!(has_warning(&v, "mod_a"));
     }
@@ -984,15 +1191,109 @@ mod tests {
     #[test]
     fn validate_enabled_flags_self_reference_in_requires_and_conflicts() {
         let enabled = vec![("mod_a".to_string(), manifest(None, &["mod_a"], &["mod_a"], &[], &[]))];
-        let v = validate_enabled(&enabled);
+        let v = validate_enabled(&enabled, "");
         assert!(!v.ok);
         assert_eq!(v.issues.iter().filter(|i| i.kind == "error").count(), 2);
     }
 
     #[test]
+    fn validate_enabled_errors_when_installed_game_is_older_than_game_version() {
+        let enabled = vec![("mod_a".to_string(), manifest_versioned(None, &[], &[], &[], &[], None, Some("1.2.0")))];
+        let v = validate_enabled(&enabled, "1.0.0");
+        assert!(!v.ok);
+        assert!(has_error(&v, "mod_a"));
+    }
+
+    #[test]
+    fn validate_enabled_warns_when_installed_game_is_newer_than_game_version() {
+        let enabled = vec![("mod_a".to_string(), manifest_versioned(None, &[], &[], &[], &[], None, Some("1.0.0")))];
+        let v = validate_enabled(&enabled, "1.2.0");
+        assert!(v.ok, "a newer game than a mod targets must never block launch");
+        assert!(has_warning(&v, "mod_a"));
+    }
+
+    #[test]
+    fn validate_enabled_passes_when_installed_game_matches_game_version_exactly() {
+        let enabled = vec![("mod_a".to_string(), manifest_versioned(None, &[], &[], &[], &[], None, Some("1.0.0")))];
+        let v = validate_enabled(&enabled, "1.0.0");
+        assert!(v.ok);
+        assert!(v.issues.is_empty());
+    }
+
+    #[test]
+    fn validate_enabled_treats_bare_game_version_the_same_as_explicit_gte() {
+        let a = manifest_versioned(None, &[], &[], &[], &[], None, Some("1.2.0"));
+        let b = manifest_versioned(None, &[], &[], &[], &[], None, Some(">= 1.2.0"));
+        let va = validate_enabled(&[("mod_a".to_string(), a)], "1.0.0");
+        let vb = validate_enabled(&[("mod_a".to_string(), b)], "1.0.0");
+        assert!(!va.ok && !vb.ok, "\"1.2.0\" and \">= 1.2.0\" must behave identically");
+    }
+
+    #[test]
+    fn validate_enabled_warns_instead_of_erroring_when_installed_game_version_is_unknown() {
+        let enabled = vec![("mod_a".to_string(), manifest_versioned(None, &[], &[], &[], &[], None, Some("1.2.0")))];
+        let v = validate_enabled(&enabled, "");
+        assert!(v.ok, "an unknown installed version must never block launch");
+        assert!(has_warning(&v, "mod_a"));
+    }
+
+    #[test]
+    fn validate_enabled_warns_instead_of_erroring_on_an_unparseable_game_version_constraint() {
+        let enabled = vec![("mod_a".to_string(), manifest_versioned(None, &[], &[], &[], &[], None, Some("not-a-version")))];
+        let v = validate_enabled(&enabled, "1.0.0");
+        assert!(v.ok);
+        assert!(has_warning(&v, "mod_a"));
+    }
+
+    #[test]
+    fn validate_enabled_errors_when_a_required_mods_version_is_too_old() {
+        // ui_color requires game_symbols >= 2.0.0, but the enabled game_symbols is only 1.0.0.
+        let enabled = vec![
+            ("game_symbols".to_string(), manifest_versioned(Some("game_symbols"), &[], &[], &[], &[host_os_platform()], Some("1.0.0"), None)),
+            ("ui_color".to_string(), manifest(Some("ui_color"), &["game_symbols >= 2.0.0"], &[], &[], &[host_os_platform()])),
+        ];
+        let v = validate_enabled(&enabled, "");
+        assert!(!v.ok);
+        assert!(has_error(&v, "ui_color"));
+    }
+
+    #[test]
+    fn validate_enabled_passes_when_a_required_mods_version_satisfies_the_constraint() {
+        let enabled = vec![
+            ("game_symbols".to_string(), manifest_versioned(Some("game_symbols"), &[], &[], &[], &[host_os_platform()], Some("1.0.0"), None)),
+            ("ui_color".to_string(), manifest(Some("ui_color"), &["game_symbols >= 1.0.0"], &[], &[], &[host_os_platform()])),
+        ];
+        let v = validate_enabled(&enabled, "");
+        assert!(v.ok, "issues: {:?}", v.issues);
+    }
+
+    #[test]
+    fn validate_enabled_warns_instead_of_erroring_when_a_required_mod_has_no_version() {
+        // game_symbols has no `version` key at all -- can't verify the >= 1.0.0 pin.
+        let enabled = vec![
+            ("game_symbols".to_string(), manifest(Some("game_symbols"), &[], &[], &[], &[host_os_platform()])),
+            ("ui_color".to_string(), manifest(Some("ui_color"), &["game_symbols >= 1.0.0"], &[], &[], &[host_os_platform()])),
+        ];
+        let v = validate_enabled(&enabled, "");
+        assert!(v.ok, "a mod predating versioned requires must not block launch");
+        assert!(has_warning(&v, "ui_color"));
+    }
+
+    #[test]
+    fn validate_enabled_leaves_a_bare_requires_entry_unconstrained() {
+        // No `>=` at all -- any enabled, correctly-ordered version satisfies it (unchanged behavior).
+        let enabled = vec![
+            ("game_symbols".to_string(), manifest(Some("game_symbols"), &[], &[], &[], &[host_os_platform()])),
+            ("ui_color".to_string(), manifest(Some("ui_color"), &["game_symbols"], &[], &[], &[host_os_platform()])),
+        ];
+        let v = validate_enabled(&enabled, "");
+        assert!(v.ok, "issues: {:?}", v.issues);
+    }
+
+    #[test]
     fn validate_enabled_flags_a_code_mod_with_no_platform_binaries() {
         let enabled = vec![("some_mod".to_string(), manifest(Some("some_mod"), &[], &[], &[], &[]))];
-        let v = validate_enabled(&enabled);
+        let v = validate_enabled(&enabled, "");
         assert!(!v.ok);
         assert!(has_error(&v, "some_mod"));
     }
@@ -1002,7 +1303,7 @@ mod tests {
         // Ships a binary, but never for the host this test runs on.
         let other_os = if host_os() == "windows" { "linux-x64" } else { "windows-x64" };
         let enabled = vec![("some_mod".to_string(), manifest(Some("some_mod"), &[], &[], &[], &[other_os]))];
-        let v = validate_enabled(&enabled);
+        let v = validate_enabled(&enabled, "");
         assert!(!v.ok);
         assert!(has_error(&v, "some_mod"));
     }
@@ -1011,7 +1312,7 @@ mod tests {
     fn validate_enabled_passes_an_asset_only_mod_with_no_platform_declared() {
         // No `code` key at all -- platform is simply irrelevant, not an error.
         let enabled = vec![("badapple".to_string(), manifest(None, &[], &[], &[], &[]))];
-        let v = validate_enabled(&enabled);
+        let v = validate_enabled(&enabled, "");
         assert!(v.ok);
     }
 

@@ -222,7 +222,9 @@ fn launch_and_track(state: &Arc<AppState>, game: String, build: String, cvar_arg
     // reach the SDK — it would hard-fail Setup() with a much less actionable
     // message. Reuse the existing pollable launch-error channel so the
     // frontend's Play flow needs no changes to surface this.
-    let validation = crate::mods::validate(&game);
+    let installed_sidecar = games::get_installed_version(&game, &build);
+    let installed_version = games::json_extract_str(&installed_sidecar, "version");
+    let validation = crate::mods::validate(&game, &installed_version);
     if !validation.ok {
         let reasons: Vec<&str> = validation.issues.iter()
             .filter(|i| i.kind == "error")
@@ -690,7 +692,9 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
             Value::Null
         }
         "getModValidation" => {
-            json!(crate::mods::validate(&str_arg(&args, 0)))
+            let game = str_arg(&args, 0);
+            let installed_version = games::installed_game_version(&game);
+            json!(crate::mods::validate(&game, &installed_version))
         }
         "autoSortMods" => {
             crate::mods::auto_sort(&str_arg(&args, 0));
