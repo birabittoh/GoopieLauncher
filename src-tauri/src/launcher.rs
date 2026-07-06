@@ -283,7 +283,26 @@ fn is_target_asset(name: &str) -> bool {
 
 #[cfg(not(windows))]
 fn is_target_asset(name: &str) -> bool {
-    name.ends_with(".AppImage")
+    // Both a `.AppImage` and a plain portable binary are published for Linux;
+    // match whichever kind we're currently running as, so a portable install
+    // doesn't get swapped for an AppImage (or vice versa) on self-update.
+    if !name.contains("-linux-") {
+        return false;
+    }
+    let is_appimage_asset = name.ends_with(".AppImage");
+    if running_as_appimage() {
+        is_appimage_asset
+    } else {
+        !is_appimage_asset
+    }
+}
+
+/// Whether we're currently running from a mounted `.AppImage` rather than a
+/// plain portable binary. See `replaceable_exe_path` for why `$APPIMAGE` is
+/// the reliable signal here.
+#[cfg(not(windows))]
+fn running_as_appimage() -> bool {
+    std::env::var_os("APPIMAGE").is_some()
 }
 
 // ── Replaceable executable path ───────────────────────────────────────────────
@@ -317,9 +336,12 @@ fn staging_path() -> std::path::PathBuf {
 fn staging_path() -> std::path::PathBuf {
     // Same directory as the replaceable file so the final rename stays on the
     // same filesystem (see `replaceable_exe_path` for why it's not current_exe).
+    // The staged file is renamed onto the real path in `apply_update` regardless
+    // of extension, so a fixed name works whether we downloaded an AppImage or
+    // a plain portable binary.
     let current = replaceable_exe_path().unwrap_or_default();
     current.parent().unwrap_or(std::path::Path::new("."))
-        .join("goopie-launcher-update.AppImage")
+        .join("goopie-launcher-update")
 }
 
 // ── Platform-specific apply ───────────────────────────────────────────────────
