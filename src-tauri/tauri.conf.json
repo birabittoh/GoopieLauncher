@@ -25,6 +25,11 @@
       "icons/icon.png",
       "icons/icon.ico"
     ],
-    "resources": {}
+    "resources": {},
+    "linux": {
+      "appimage": {
+        "bundleMediaFramework": true
+      }
+    }
   }
 }
