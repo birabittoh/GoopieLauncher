@@ -8,7 +8,7 @@ on:
 jobs:
   test:
     name: Test ${{ matrix.platform }}
-    runs-on: ${{ matrix.platform == 'linux' && 'ubuntu-22.04' || 'windows-latest' }}
+    runs-on: ${{ matrix.platform == 'linux' && 'ubuntu-24.04' || 'windows-latest' }}
     strategy:
       fail-fast: false
       matrix:

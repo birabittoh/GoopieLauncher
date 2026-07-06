@@ -42,7 +42,7 @@ on:
 
 jobs:
   build:
-    runs-on: ${{ inputs.platform == 'linux' && 'ubuntu-22.04' || 'windows-latest' }}
+    runs-on: ${{ inputs.platform == 'linux' && 'ubuntu-24.04' || 'windows-latest' }}
 
     steps:
       - name: Checkout
@@ -74,14 +74,16 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libappindicator3-dev \
             librsvg2-dev \
+            libjpeg-turbo8 \
+            xvfb \
             patchelf \
             build-essential \
             libssl-dev \
             pkg-config
 
       # ── Tauri CLI ──────────────────────────────────────────────────────────
-      - name: Install Tauri CLI
-        run: cargo install tauri-cli --version '^2' --locked
+      - name: Install Tauri CLI (truly-portable-appimage branch)
+        run: cargo install tauri-cli --git https://github.com/tauri-apps/tauri --branch feat/truly-portable-appimage --locked
 
       # ── Pre-built website (when provided by the caller) ────────────────────
       - name: Download pre-built offline site
@@ -95,8 +97,14 @@ jobs:
       - name: Build (Linux)
         if: inputs.platform == 'linux'
         # .deb is intentionally not built — see "Stage/Upload .deb" below for why.
-        run: cargo tauri build --bundles appimage
+        # The new sharun-based AppImage format is enabled via the env var
+        run: script -q -c "cargo tauri build --bundles appimage" /dev/null
         env:
+          TAURI_BUNDLER_NEW_APPIMAGE_FORMAT: "true"
+          # Preload libjpeg.so.8 so quick-sharun's LD_DEBUG=libs strace
+          # detects it and bundles it (WebKit subprocesses dlopen it only
+          # when processing actual JPEG images, which never happens in CI).
+          LD_PRELOAD: libjpeg.so.8
           VERSION: ${{ inputs.version }}
           GOOPIE_OAUTH_CLIENT_ID: ${{ secrets.GOOPIE_OAUTH_CLIENT_ID }}
           GOOPIE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOPIE_OAUTH_CLIENT_SECRET }}
