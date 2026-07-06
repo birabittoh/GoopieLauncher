@@ -1,3 +1,18 @@
+## Resolution
+
+The post-build injection step (extract → add lib → repack) was on the right
+track, but it dropped `libjpeg.so.8` into a flat `usr/lib/`, not the
+multiarch subdirectory (`usr/lib/x86_64-linux-gnu/`) where sharun actually
+put every other WebKit dependency. sharun's `LD_LIBRARY_PATH` only covers the
+directories it populated during bundling, so the injected library sat outside
+it and the WebKit subprocesses still couldn't find it — this is why the
+Steam Deck testing kept failing even after the injection commit landed.
+
+Fix: locate the directory sharun already put `libwebkit2gtk-4.1.so*` in
+(inside the extracted squashfs) and copy `libjpeg.so.8` there instead of a
+hardcoded `usr/lib`. See `.github/workflows/_build.yml`, "Inject libjpeg.so.8
+into AppImage".
+
 # libjpeg.so.8 missing from sharun-based AppImage
 
 ## The problem

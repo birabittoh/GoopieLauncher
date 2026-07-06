@@ -127,9 +127,14 @@ jobs:
           dd if="./$APPIMAGE_NAME" of=image.squashfs bs=1 skip="$OFFSET" status=none
           unsquashfs -d squashfs-root image.squashfs
 
-          # Copy the missing library
-          mkdir -p squashfs-root/usr/lib
-          cp /usr/lib/x86_64-linux-gnu/libjpeg.so.8 squashfs-root/usr/lib/
+          # Copy the missing library next to the other WebKit shared libs
+          # sharun already bundled — dropping it in a flat usr/lib instead
+          # puts it outside the AppImage's LD_LIBRARY_PATH (sharun preserves
+          # the original multiarch subdirectory, e.g. usr/lib/x86_64-linux-gnu),
+          # so the WebKit subprocesses still couldn't find it at runtime.
+          LIBDIR="$(dirname "$(find squashfs-root -name 'libwebkit2gtk-4.1.so*' | head -1)")"
+          mkdir -p "$LIBDIR"
+          cp /usr/lib/x86_64-linux-gnu/libjpeg.so.8 "$LIBDIR/"
 
           # Repack with the same compression
           mksquashfs squashfs-root/ new.squashfs -noappend -comp zstd
