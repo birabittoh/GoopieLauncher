@@ -75,6 +75,7 @@ jobs:
             libappindicator3-dev \
             librsvg2-dev \
             libjpeg-turbo8 \
+            squashfs-tools \
             xvfb \
             patchelf \
             build-essential \
@@ -101,15 +102,44 @@ jobs:
         run: script -q -c "cargo tauri build --bundles appimage" /dev/null
         env:
           TAURI_BUNDLER_NEW_APPIMAGE_FORMAT: "true"
-          # Preload libjpeg.so.8 so quick-sharun's LD_DEBUG=libs strace
-          # detects it and bundles it (WebKit subprocesses dlopen it only
-          # when processing actual JPEG images, which never happens in CI).
-          LD_PRELOAD: libjpeg.so.8
           VERSION: ${{ inputs.version }}
           GOOPIE_OAUTH_CLIENT_ID: ${{ secrets.GOOPIE_OAUTH_CLIENT_ID }}
           GOOPIE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOPIE_OAUTH_CLIENT_SECRET }}
           GOOPIE_RELEASES_API: ${{ vars.GOOPIE_RELEASES_API }}
           GOOPIE_DISCORD_CLIENT_ID: ${{ vars.GOOPIE_DISCORD_CLIENT_ID }}
+
+      # quick-sharun does not detect libjpeg.so.8 (WebKit subprocess dlopen
+      # dep), so inject it into the built AppImage by extracting, adding the
+      # missing library, and repacking.
+      - name: Inject libjpeg.so.8 into AppImage
+        if: inputs.platform == 'linux'
+        shell: bash
+        run: |
+          set -eux
+          APPIMAGE="$(ls src-tauri/target/release/bundle/appimage/*.AppImage | head -1)"
+          cd "$(dirname "$APPIMAGE")"
+          APPIMAGE_NAME="$(basename "$APPIMAGE")"
+
+          # Read offset from last 8 bytes (standard AppImage V2 format)
+          OFFSET=$(tail -c 8 "./$APPIMAGE_NAME" | od -An -t u8 | tr -d ' ')
+
+          # Extract and unpack the squashfs portion
+          dd if="./$APPIMAGE_NAME" of=image.squashfs bs=1 skip="$OFFSET" status=none
+          unsquashfs -d squashfs-root image.squashfs
+
+          # Copy the missing library
+          mkdir -p squashfs-root/usr/lib
+          cp /usr/lib/x86_64-linux-gnu/libjpeg.so.8 squashfs-root/usr/lib/
+
+          # Repack with the same compression
+          mksquashfs squashfs-root/ new.squashfs -noappend -comp zstd
+
+          # Extract the runtime stub and stitch everything back
+          dd if="./$APPIMAGE_NAME" of=runtime bs=1 count="$OFFSET" status=none
+          cat runtime new.squashfs > "./$APPIMAGE_NAME"
+          chmod +x "./$APPIMAGE_NAME"
+
+          rm -rf squashfs-root/ runtime new.squashfs image.squashfs
 
       - name: Build (Windows)
         if: inputs.platform == 'windows'
