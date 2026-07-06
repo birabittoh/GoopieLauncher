@@ -1,0 +1,38 @@
+id: xyz.goopie.launcher
+runtime: org.gnome.Platform
+runtime-version: '47'
+sdk: org.gnome.Sdk
+command: goopie-launcher
+rename-desktop-file: goopie-launcher
+rename-icon: goopie-launcher
+
+finish-args:
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --share=ipc
+  - --share=network
+  - --filesystem=home
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --talk-name=org.freedesktop.Notifications
+  - --env=FLATPAK=1
+
+modules:
+  - name: goopie-launcher
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 goopie-launcher -t /app/bin/
+      - install -Dm644 xyz.goopie.launcher.desktop -t /app/share/applications/
+      - install -Dm644 xyz.goopie.launcher.metainfo.xml -t /app/share/metainfo/
+      - for size in 32 64 128 256 512; do
+          install -Dm644 icon.png "/app/share/icons/hicolor/${size}x${size}/apps/xyz.goopie.launcher.png";
+        done
+    sources:
+      - type: file
+        path: goopie-launcher
+      - type: file
+        path: xyz.goopie.launcher.desktop
+      - type: file
+        path: xyz.goopie.launcher.metainfo.xml
+      - type: file
+        path: icon.png

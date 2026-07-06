@@ -8,7 +8,7 @@ on:
         type: string
         required: true
       platform:
-        description: "Target platform: linux or windows"
+        description: "Target platform: linux, windows, or flatpak"
         type: string
         required: true
       arch:
@@ -42,7 +42,7 @@ on:
 
 jobs:
   build:
-    runs-on: ${{ inputs.platform == 'linux' && 'ubuntu-22.04' || 'windows-latest' }}
+    runs-on: ${{ (inputs.platform == 'linux' || inputs.platform == 'flatpak') && 'ubuntu-22.04' || 'windows-latest' }}
 
     steps:
       - name: Checkout
@@ -67,7 +67,7 @@ jobs:
 
       # ── Linux system dependencies ──────────────────────────────────────────
       - name: Install Linux system dependencies
-        if: inputs.platform == 'linux'
+        if: inputs.platform == 'linux' || inputs.platform == 'flatpak'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y \
@@ -78,6 +78,16 @@ jobs:
             build-essential \
             libssl-dev \
             pkg-config
+
+      - name: Install Flatpak build dependencies
+        if: inputs.platform == 'flatpak'
+        run: |
+          sudo apt-get install -y flatpak flatpak-builder
+          flatpak remote-add --user --if-not-exists flathub \
+            https://flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user -y --noninteractive flathub \
+            org.gnome.Platform//47 \
+            org.gnome.Sdk//47
 
       # ── Tauri CLI ──────────────────────────────────────────────────────────
       - name: Install Tauri CLI
@@ -103,6 +113,18 @@ jobs:
           GOOPIE_RELEASES_API: ${{ vars.GOOPIE_RELEASES_API }}
           GOOPIE_DISCORD_CLIENT_ID: ${{ vars.GOOPIE_DISCORD_CLIENT_ID }}
 
+      - name: Build (Flatpak)
+        if: inputs.platform == 'flatpak'
+        # Just build the portable binary — no AppImage needed.
+        # The offline site is handled by beforeBuildCommand / pre-built artifact.
+        run: cargo tauri build --no-bundle
+        env:
+          VERSION: ${{ inputs.version }}
+          GOOPIE_OAUTH_CLIENT_ID: ${{ secrets.GOOPIE_OAUTH_CLIENT_ID }}
+          GOOPIE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOPIE_OAUTH_CLIENT_SECRET }}
+          GOOPIE_RELEASES_API: ${{ vars.GOOPIE_RELEASES_API }}
+          GOOPIE_DISCORD_CLIENT_ID: ${{ vars.GOOPIE_DISCORD_CLIENT_ID }}
+
       - name: Build (Windows)
         if: inputs.platform == 'windows'
         run: cargo tauri build --bundles nsis,msi
@@ -112,6 +134,45 @@ jobs:
           GOOPIE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOPIE_OAUTH_CLIENT_SECRET }}
           GOOPIE_RELEASES_API: ${{ vars.GOOPIE_RELEASES_API }}
           GOOPIE_DISCORD_CLIENT_ID: ${{ vars.GOOPIE_DISCORD_CLIENT_ID }}
+
+      # ── Flatpak bundle (Linux binary + Flatpak metadata) ────────────────────
+      - name: Build Flatpak bundle
+        if: inputs.platform == 'flatpak'
+        run: |
+          set -euo pipefail
+
+          FLATPAK_STAGING="flatpak-staging"
+          mkdir -p "$FLATPAK_STAGING"
+
+          # Compute the artifact base name (for the .flatpak file)
+          if [ "${{ inputs.versioned_filename }}" = "true" ]; then
+            BASE="Goopie-Launcher-${{ inputs.version }}-linux-${{ inputs.arch }}"
+          else
+            BASE="Goopie-Launcher-linux-${{ inputs.arch }}"
+          fi
+          echo "ARTIFACT_BASE=$BASE" >> "$GITHUB_ENV"
+
+          # Copy the portable binary + metadata into the staging dir
+          cp src-tauri/target/release/goopie-launcher "$FLATPAK_STAGING/"
+          cp packaging/flatpak/xyz.goopie.launcher.yml "$FLATPAK_STAGING/"
+          cp packaging/flatpak/xyz.goopie.launcher.desktop "$FLATPAK_STAGING/"
+          cp packaging/flatpak/xyz.goopie.launcher.metainfo.xml "$FLATPAK_STAGING/"
+          cp src-tauri/icons/icon.png "$FLATPAK_STAGING/"
+
+          # Build the Flatpak
+          flatpak-builder \
+            --user \
+            --repo=flatpak-repo \
+            --force-clean \
+            flatpak-build-dir \
+            "$FLATPAK_STAGING/xyz.goopie.launcher.yml"
+
+          # Create a single-file .flatpak bundle
+          mkdir -p staged
+          flatpak build-bundle \
+            flatpak-repo \
+            "staged/${BASE}.flatpak" \
+            xyz.goopie.launcher
 
       # ── Stage artifacts with consistent hyphenated names ───────────────────
       - name: Stage artifacts (Linux)
@@ -171,6 +232,13 @@ jobs:
         with:
           name: Goopie-Launcher-${{ inputs.version }}-linux-${{ inputs.arch }}-portable
           path: staged/${{ env.ARTIFACT_BASE }}
+
+      - name: Upload .flatpak
+        if: inputs.platform == 'flatpak'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Goopie-Launcher-${{ inputs.version }}-linux-${{ inputs.arch }}-flatpak
+          path: staged/*.flatpak
 
       - name: Upload .msi
         if: inputs.platform == 'windows'

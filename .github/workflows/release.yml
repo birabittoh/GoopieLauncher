@@ -73,9 +73,21 @@ jobs:
       versioned_filename: false
       website-artifact: offline-site
 
+  build-flatpak:
+    needs: build-website
+    name: Build linux/x86_64 (Flatpak)
+    uses: ./.github/workflows/_build.yml
+    secrets: inherit
+    with:
+      version: ${{ github.ref_name }}
+      platform: flatpak
+      arch: x86_64
+      versioned_filename: false
+      website-artifact: offline-site
+
   release:
     name: Create GitHub Release
-    needs: [build-linux, build-windows]
+    needs: [build-linux, build-windows, build-flatpak]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -98,4 +110,5 @@ jobs:
             artifacts/**/*-portable/*
             artifacts/**/*.msi
             artifacts/**/*.exe
+            artifacts/**/*.flatpak
           generate_release_notes: true

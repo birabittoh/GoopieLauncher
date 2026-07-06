@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Goopie Launcher
+Comment=An easy launcher for ReXGlue-based games
+Exec=goopie-launcher
+Icon=xyz.goopie.launcher
+Type=Application
+Categories=Game;
+Terminal=false
+StartupNotify=true

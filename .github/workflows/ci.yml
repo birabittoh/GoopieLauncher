@@ -67,3 +67,15 @@ jobs:
       platform: windows
       arch: x86_64
       website-artifact: offline-site
+
+  build-flatpak:
+    needs: [prepare, build-website]
+    if: needs.prepare.outputs.is-release != 'true'
+    name: Build linux/x86_64 (Flatpak)
+    uses: ./.github/workflows/_build.yml
+    secrets: inherit
+    with:
+      version: ${{ needs.prepare.outputs.sha-short }}
+      platform: flatpak
+      arch: x86_64
+      website-artifact: offline-site
