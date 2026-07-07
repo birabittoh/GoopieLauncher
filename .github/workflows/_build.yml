@@ -175,13 +175,35 @@ jobs:
 
           "./$APPIMAGE_NAME" --appimage-extract
 
+          if [ ! -d squashfs-root ]; then
+            echo "::error::--appimage-extract did not produce ./squashfs-root; contents of cwd:"
+            find . -maxdepth 2
+            exit 1
+          fi
+
           # Missing libraries go next to the other WebKit shared libs sharun
           # already bundled (a flat lib/, not a multiarch usr/lib/<arch>/
           # subdir, despite what earlier revisions of this step assumed).
-          LIBDIR="$(dirname "$(find squashfs-root -name 'libwebkit2gtk-4.1.so*' | head -1)")"
+          # quick-sharun.sh is fetched from its upstream main branch on every
+          # build (not pinned), so its output layout can drift between runs —
+          # dump the whole tree on any mismatch instead of silently
+          # constructing bogus empty paths (see git history for what that
+          # looks like: a "Permission denied" writing to filesystem root).
+          WEBKIT_SO="$(find squashfs-root -name 'libwebkit2gtk-4.1.so*' | head -1)"
+          if [ -z "$WEBKIT_SO" ]; then
+            echo "::error::Could not find libwebkit2gtk-4.1.so* anywhere under squashfs-root; full tree:"
+            find squashfs-root
+            exit 1
+          fi
+          LIBDIR="$(dirname "$WEBKIT_SO")"
           mkdir -p "$LIBDIR"
 
-          WEBKIT_BINS="$(find squashfs-root -path '*/webkit2gtk-4.1/WebKit*Process')"
+          WEBKIT_BINS="$(find squashfs-root -path '*webkit2gtk-4.1/WebKit*Process')"
+          if [ -z "$WEBKIT_BINS" ]; then
+            echo "::error::Could not find any WebKit*Process binaries under squashfs-root; full tree:"
+            find squashfs-root
+            exit 1
+          fi
 
           # Ask the WebKit subprocess binaries themselves what they're still
           # missing (via ldd) instead of hardcoding one library name at a
@@ -204,7 +226,12 @@ jobs:
           # hook tokens) that a launch-time hook resolves to $APPDIR/lib, so
           # PT_INTERP below has a stable path to point at across runs/mounts.
           WEBKIT_LIB_TOKEN="goopie-webkit-lib"
-          HOOK_DIR="$(find squashfs-root -maxdepth 1 -type d -name bin)"
+          HOOK_DIR="$(find squashfs-root -maxdepth 2 -type d -name bin | head -1)"
+          if [ -z "$HOOK_DIR" ]; then
+            echo "::error::Could not find a bin/ dir under squashfs-root to drop the launch hook in; full tree:"
+            find squashfs-root
+            exit 1
+          fi
           printf '%s\n' "LC_ALL=C ln -sfn \"\$APPDIR\"/lib /tmp/$WEBKIT_LIB_TOKEN || :" \
             > "$HOOK_DIR/00-goopie-webkit-libpath.hook"
           chmod +x "$HOOK_DIR/00-goopie-webkit-libpath.hook"
