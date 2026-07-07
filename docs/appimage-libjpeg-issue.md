@@ -1,3 +1,84 @@
+## Update 2: the real root cause was never "a missing library"
+
+A user hit the same symptom again on a different host (CachyOS/Arch, not the
+CI's Ubuntu 24.04), this time for `libicudata.so.74`. Debugging live against
+their actual downloaded AppImage (extract, patch, re-run, repeat) turned up
+two distinct bugs stacked on top of each other — bundling one more library
+was never going to be a complete fix:
+
+1. **`WebKit*Process` binaries have no RPATH and keep their original system
+   interpreter.** They're plain copies of the upstream webkit2gtk helper
+   executables. quick-sharun's LD_LIBRARY_PATH plumbing only covers the
+   *main* process — it execs `goopie-launcher` via an explicit
+   `ld-linux --library-path ...` invocation, which never touches a real env
+   var, so nothing propagates to processes WebKit forks internally. Those
+   helpers fall through entirely to the *host's* system libraries. This is
+   why the bug is host-dependent: it only surfaces once a host's system
+   package (ICU, libxml2, whatever) drifts far enough from what this WebKit
+   build was compiled against. Confirmed by checking `/proc/<pid>/environ` of
+   the running main process — no `LD_LIBRARY_PATH` there at all, yet the main
+   process's own libs resolve fine, because it's loaded via a one-off
+   `ld.so --library-path` argument, not an inherited env var.
+
+2. **Fixing bug 1 with a naive RPATH isn't enough either.** patchelf sets
+   `DT_RUNPATH` by default, which only applies to an ELF's *direct*
+   dependencies — not transitive ones. `libxml2.so.2` (missing on the test
+   host, which only has Arch's incompatible `libxml2.so.16`) is a dependency
+   of `libwebkit2gtk-4.1.so.0`, not of `WebKitWebProcess` itself, so RUNPATH
+   never got consulted for it and the loader fell back to system search
+   paths. Needs classic `DT_RPATH` (`patchelf --force-rpath`), which *is*
+   applied transitively for the whole load.
+3. **And once DT_RPATH pulls in the bundle for transitive deps, it also pulls
+   in the bundle's own `libc.so.6`** (since RPATH is now searched
+   process-wide) — while the binary's PT_INTERP is still the *host's* dynamic
+   loader, since it was never repatched. Mismatched libc/ld.so pairing breaks
+   glibc's private ABI: `undefined symbol: __nptl_change_stack_perm, version
+   GLIBC_PRIVATE`. Fix: repoint PT_INTERP at the bundled
+   `ld-linux-x86-64.so.2` too, so loader and libc are a matched pair.
+
+PT_INTERP is resolved directly by the kernel with no `$ORIGIN` or env-var
+expansion, so it can't be pointed at the AppImage's mount path (only known at
+run time, changes every launch). quick-sharun already solves exactly this
+problem for other hardcoded absolute paths it finds at build time — it drops
+`*.hook` scripts in `bin/` that symlink a fixed `/tmp/<token>` to `$APPDIR/lib`
+(etc.) on every launch, and patches the relevant binaries to reference that
+fixed token instead. The CI step now adds its *own* hook
+(`00-goopie-webkit-libpath.hook`, symlinking `/tmp/goopie-webkit-lib` →
+`$APPDIR/lib`) rather than depending on quick-sharun's own token existing
+(it's randomly generated per-build and only appears if quick-sharun's own
+hardcoded-path detection fires), and points `WebKit*Process`'s new PT_INTERP
+at that fixed path.
+
+Also fixed along the way: the missing-library detection loop (see "Update 1"
+below) globbed `usr/lib/*/webkit2gtk-4.1/WebKit*Process`, assuming a
+multiarch subdirectory that doesn't actually exist in this bundler's output
+(it's a flat `lib/webkit2gtk-4.1/`) — the glob silently matched nothing, so
+that whole detection loop had been a no-op since it was written.
+
+All of this was verified end-to-end against the user's actual downloaded
+AppImage (patched the extracted AppDir in place, re-ran it, watched
+`WebKitNetworkProcess`/`WebKitWebProcess` start and stay up, confirmed the
+window rendered real content) before porting the fix into
+`.github/workflows/_build.yml`.
+
+## Update 1: generalized to any missing WebKit runtime dep
+
+After the DwarFS/`uruntime` fix below, a second missing library surfaced at
+runtime on a user's machine: `libicudata.so.74` (WebKit's ICU dependency),
+failing with the same "cannot open shared object file" error, but only for
+`WebKitNetworkProcess`/`WebKitWebProcess` — same failure mode as libjpeg, just
+a different library that `quick-sharun.sh` didn't detect.
+
+Rather than hardcode a second library name, the injection step in
+`.github/workflows/_build.yml` ("Inject missing shared libraries into
+AppImage") now runs `ldd` against the extracted WebKit subprocess binaries,
+collects whatever it reports as "not found", and copies each one in from the
+host (`cp -L` to dereference the soname symlink, so the AppDir gets a real
+file rather than a potentially-dangling symlink). `libicu74` was also added
+to the apt install list alongside `libjpeg-turbo8` so the host is guaranteed
+to have it. This turned out not to be sufficient on its own — see "Update 2"
+above for the rest of the story.
+
 ## Resolution
 
 Every earlier attempt at the post-build injection step assumed the AppImage's
