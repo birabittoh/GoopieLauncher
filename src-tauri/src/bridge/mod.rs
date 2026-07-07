@@ -213,7 +213,7 @@ impl AppState {
 /// Spawn `game`/`build` and start tracking it as the running game, replacing
 /// (and killing) any previously-running game first — mirrors the "closing the
 /// running game loses unsaved progress" behaviour the frontend warns about.
-fn launch_and_track(state: &Arc<AppState>, game: String, build: String, cvar_args: String, custom_exe: String, set_data_root: bool, mount_update: bool) {
+fn launch_and_track(state: &Arc<AppState>, game: String, build: String, cvar_args: String, custom_exe: String, set_data_root: bool, mount_update: bool, cvar_types: String) {
     kill_running_game(state);
     *state.last_launch_error.lock().unwrap() = None;
 
@@ -237,7 +237,7 @@ fn launch_and_track(state: &Arc<AppState>, game: String, build: String, cvar_arg
         return;
     }
 
-    let child = match games::play(&game, &build, &cvar_args, &custom_exe, set_data_root, mount_update) {
+    let child = match games::play(&game, &build, &cvar_args, &custom_exe, set_data_root, mount_update, &cvar_types) {
         Ok(child) => child,
         Err(msg) => {
             *state.last_launch_error.lock().unwrap() = Some(msg);
@@ -739,9 +739,14 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
             let custom_exe = str_arg(&args, 3);
             let set_data_root = bool_arg(&args, 4, false);
             let mount_update = bool_arg(&args, 5, true);
+            // Optional (7th): JSON map of cvar tag -> declared CVarType. Absent
+            // when an older website/shim doesn't send it — `str_arg` returns ""
+            // for a missing index, and `games::play` falls back to inferring
+            // each value's TOML type from its formatted string.
+            let cvar_types = str_arg(&args, 6);
             let state_clone = Arc::clone(state);
             std::thread::spawn(move || {
-                launch_and_track(&state_clone, game, build, cvar_args, custom_exe, set_data_root, mount_update);
+                launch_and_track(&state_clone, game, build, cvar_args, custom_exe, set_data_root, mount_update, cvar_types);
             });
             Value::Null
         }
