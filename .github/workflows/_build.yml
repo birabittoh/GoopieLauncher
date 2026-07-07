@@ -169,15 +169,28 @@ jobs:
         run: |
           set -eux
           APPIMAGE="$(ls src-tauri/target/release/bundle/appimage/*.AppImage | head -1)"
-          cd "$(dirname "$APPIMAGE")"
-          APPIMAGE_NAME="$(basename "$APPIMAGE")"
+          ORIG_DIR="$(dirname "$APPIMAGE")"
+          ORIG_NAME="$(basename "$APPIMAGE")"
+
+          # productName has a space in it ("Goopie Launcher"), so the raw
+          # bundled AppImage filename does too. Work on a space-free copy:
+          # uruntime's --appimage-extract silently produced an empty
+          # ./squashfs-root (100% progress, zero files) when invoked against
+          # the space-containing path — consistent with the sort of thing
+          # that breaks when a small tool's internal glue does unquoted
+          # argv[0]/$0 handling.
+          WORKDIR="$RUNNER_TEMP/appimage-inject"
+          mkdir -p "$WORKDIR"
+          APPIMAGE_NAME="goopie-launcher.AppImage"
+          cp "$ORIG_DIR/$ORIG_NAME" "$WORKDIR/$APPIMAGE_NAME"
+          cd "$WORKDIR"
           chmod +x "./$APPIMAGE_NAME"
 
           "./$APPIMAGE_NAME" --appimage-extract
 
-          if [ ! -d squashfs-root ]; then
-            echo "::error::--appimage-extract did not produce ./squashfs-root; contents of cwd:"
-            find . -maxdepth 2
+          if [ ! -d squashfs-root ] || [ -z "$(find squashfs-root -mindepth 1 -print -quit)" ]; then
+            echo "::error::--appimage-extract produced no (or an empty) ./squashfs-root; contents of cwd:"
+            find . -maxdepth 3
             exit 1
           fi
 
@@ -252,7 +265,12 @@ jobs:
           "$APPIMAGETOOL" squashfs-root -o . -n "$APPIMAGE_NAME"
           chmod +x "./$APPIMAGE_NAME"
 
-          rm -rf squashfs-root/
+          # Copy the patched AppImage back over the original (space-containing)
+          # name/location so the later "Stage artifacts (Linux)" step finds it.
+          cp "./$APPIMAGE_NAME" "$ORIG_DIR/$ORIG_NAME"
+          chmod +x "$ORIG_DIR/$ORIG_NAME"
+
+          rm -rf "$WORKDIR"
 
       - name: Build (Windows)
         if: inputs.platform == 'windows'
