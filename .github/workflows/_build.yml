@@ -120,11 +120,16 @@ jobs:
           cd "$(dirname "$APPIMAGE")"
           APPIMAGE_NAME="$(basename "$APPIMAGE")"
 
-          # Read offset from last 8 bytes (standard AppImage V2 format)
-          OFFSET=$(tail -c 8 "./$APPIMAGE_NAME" | od -An -t u8 | tr -d ' ')
+          # Locate the embedded squashfs by its magic bytes ("hsqs") rather
+          # than trying to read a stored offset — AppImage doesn't keep one
+          # in the last 8 bytes (that read garbage: dd then rejected it with
+          # "cannot skip: Invalid argument").
+          OFFSET=$(LC_ALL=C grep -a -b -o -m1 "hsqs" "./$APPIMAGE_NAME" | head -1 | cut -d: -f1)
 
-          # Extract and unpack the squashfs portion
-          dd if="./$APPIMAGE_NAME" of=image.squashfs bs=1 skip="$OFFSET" status=none
+          # Extract and unpack the squashfs portion. iflag=skip_bytes lets dd
+          # skip an exact byte offset while still reading in large blocks
+          # (bs=1 would mean byte-at-a-time I/O over a 100+MB file).
+          dd if="./$APPIMAGE_NAME" of=image.squashfs bs=1M skip="$OFFSET" iflag=skip_bytes status=none
           unsquashfs -d squashfs-root image.squashfs
 
           # Copy the missing library next to the other WebKit shared libs
@@ -140,7 +145,7 @@ jobs:
           mksquashfs squashfs-root/ new.squashfs -noappend -comp zstd
 
           # Extract the runtime stub and stitch everything back
-          dd if="./$APPIMAGE_NAME" of=runtime bs=1 count="$OFFSET" status=none
+          dd if="./$APPIMAGE_NAME" of=runtime bs=1M count="$OFFSET" iflag=count_bytes status=none
           cat runtime new.squashfs > "./$APPIMAGE_NAME"
           chmod +x "./$APPIMAGE_NAME"
 
