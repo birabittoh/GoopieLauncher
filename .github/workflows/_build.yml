@@ -75,7 +75,6 @@ jobs:
             libappindicator3-dev \
             librsvg2-dev \
             libjpeg-turbo8 \
-            squashfs-tools \
             xvfb \
             patchelf \
             build-essential \
@@ -111,6 +110,23 @@ jobs:
       # quick-sharun does not detect libjpeg.so.8 (WebKit subprocess dlopen
       # dep), so inject it into the built AppImage by extracting, adding the
       # missing library, and repacking.
+      #
+      # The three previous attempts at this step (see git log) all assumed
+      # the payload was a squashfs image and tried to locate/unpack it by
+      # hand (a stored offset, a magic-byte search, the ELF section-header
+      # math) — every one failed with an invalid-superblock error. The
+      # bundler (tauri-apps/tauri's feat/truly-portable-appimage branch)
+      # actually runs pkgforge-dev's quick-sharun.sh, which packs the AppDir
+      # with pkgforge-dev's own `appimagetool`: that tool embeds a DwarFS
+      # image (not squashfs) behind the `uruntime` runtime. So there was
+      # never a squashfs superblock to find.
+      #
+      # uruntime is format-agnostic from the outside: `--appimage-extract`
+      # extracts either backing format to ./squashfs-root (name kept for
+      # AppImageKit compat), so let the AppImage extract itself instead of
+      # reimplementing that. Repacking goes through the same appimagetool
+      # quick-sharun.sh uses, which re-embeds whichever format it was built
+      # to use.
       - name: Inject libjpeg.so.8 into AppImage
         if: inputs.platform == 'linux'
         shell: bash
@@ -119,20 +135,9 @@ jobs:
           APPIMAGE="$(ls src-tauri/target/release/bundle/appimage/*.AppImage | head -1)"
           cd "$(dirname "$APPIMAGE")"
           APPIMAGE_NAME="$(basename "$APPIMAGE")"
+          chmod +x "./$APPIMAGE_NAME"
 
-          # Compute the squashfs offset the same way the AppImage runtime
-          # itself does: it starts right after the ELF section header table
-          # (e_shoff + e_shentsize * e_shnum). Neither the last-8-bytes read
-          # nor a search for the "hsqs" magic are reliable — the former isn't
-          # where AppImage stores anything, and the latter can false-positive
-          # on the magic bytes appearing earlier inside the runtime stub.
-          OFFSET=$(python3 -c "import struct; f = open('./$APPIMAGE_NAME', 'rb'); f.seek(0x28); shoff = struct.unpack('<Q', f.read(8))[0]; f.seek(0x3a); shentsize, shnum = struct.unpack('<HH', f.read(4)); print(shoff + shentsize * shnum)")
-
-          # Extract and unpack the squashfs portion. iflag=skip_bytes lets dd
-          # skip an exact byte offset while still reading in large blocks
-          # (bs=1 would mean byte-at-a-time I/O over a 100+MB file).
-          dd if="./$APPIMAGE_NAME" of=image.squashfs bs=1M skip="$OFFSET" iflag=skip_bytes status=none
-          unsquashfs -d squashfs-root image.squashfs
+          "./$APPIMAGE_NAME" --appimage-extract
 
           # Copy the missing library next to the other WebKit shared libs
           # sharun already bundled — dropping it in a flat usr/lib instead
@@ -143,15 +148,18 @@ jobs:
           mkdir -p "$LIBDIR"
           cp /usr/lib/x86_64-linux-gnu/libjpeg.so.8 "$LIBDIR/"
 
-          # Repack with the same compression
-          mksquashfs squashfs-root/ new.squashfs -noappend -comp zstd
+          ARCH="$(uname -m)"
+          APPIMAGETOOL="$RUNNER_TEMP/appimagetool"
+          if [ ! -x "$APPIMAGETOOL" ]; then
+            curl -Lso "$APPIMAGETOOL" "https://github.com/pkgforge-dev/appimagetool/releases/latest/download/appimagetool-${ARCH}-linux"
+            chmod +x "$APPIMAGETOOL"
+          fi
 
-          # Extract the runtime stub and stitch everything back
-          dd if="./$APPIMAGE_NAME" of=runtime bs=1M count="$OFFSET" iflag=count_bytes status=none
-          cat runtime new.squashfs > "./$APPIMAGE_NAME"
+          rm -f "./$APPIMAGE_NAME"
+          "$APPIMAGETOOL" squashfs-root -o . -n "$APPIMAGE_NAME"
           chmod +x "./$APPIMAGE_NAME"
 
-          rm -rf squashfs-root/ runtime new.squashfs image.squashfs
+          rm -rf squashfs-root/
 
       - name: Build (Windows)
         if: inputs.platform == 'windows'

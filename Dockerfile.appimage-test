@@ -1,0 +1,42 @@
+# Local reproduction of the .github/workflows/_build.yml Linux build, for
+# testing the AppImage bundling + libjpeg injection step without needing a
+# real CI run. Not used by CI itself.
+#
+# Build & run:
+#   docker build -f Dockerfile.appimage-test -t goopie-appimage-test .
+#   docker run --rm -it goopie-appimage-test bash
+# Then inside the container:
+#   cd /work && bash ci-appimage-test.sh
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update -qq && apt-get install -y \
+    curl \
+    ca-certificates \
+    git \
+    libwebkit2gtk-4.1-dev \
+    libappindicator3-dev \
+    librsvg2-dev \
+    libjpeg-turbo8 \
+    xvfb \
+    patchelf \
+    build-essential \
+    libssl-dev \
+    pkg-config \
+    python3 \
+    file \
+    && rm -rf /var/lib/apt/lists/*
+
+# Node.js 22 (matches actions/setup-node@v4 in CI)
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# Rust stable (matches dtolnay/rust-toolchain@stable in CI)
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+RUN cargo install tauri-cli --git https://github.com/tauri-apps/tauri --branch feat/truly-portable-appimage --locked
+
+WORKDIR /work

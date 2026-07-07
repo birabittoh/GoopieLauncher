@@ -1,17 +1,31 @@
 ## Resolution
 
-The post-build injection step (extract → add lib → repack) was on the right
-track, but it dropped `libjpeg.so.8` into a flat `usr/lib/`, not the
-multiarch subdirectory (`usr/lib/x86_64-linux-gnu/`) where sharun actually
-put every other WebKit dependency. sharun's `LD_LIBRARY_PATH` only covers the
-directories it populated during bundling, so the injected library sat outside
-it and the WebKit subprocesses still couldn't find it — this is why the
-Steam Deck testing kept failing even after the injection commit landed.
+Every earlier attempt at the post-build injection step assumed the AppImage's
+payload was a **squashfs** image and tried to locate/unpack it by hand (a
+stored offset, a magic-byte search, ELF section-header math). All of them
+failed at the unpack step, with `unsquashfs` reporting an invalid superblock.
 
-Fix: locate the directory sharun already put `libwebkit2gtk-4.1.so*` in
-(inside the extracted squashfs) and copy `libjpeg.so.8` there instead of a
-hardcoded `usr/lib`. See `.github/workflows/_build.yml`, "Inject libjpeg.so.8
-into AppImage".
+The actual bundler chain is: Tauri's `feat/truly-portable-appimage` branch
+shells out to pkgforge-dev's `quick-sharun.sh`, which in turn packs the
+finished AppDir using pkgforge-dev's own `appimagetool` (a Rust rewrite, not
+the classic AppImageKit one). That tool embeds the payload as a **DwarFS**
+image, not squashfs, played back through the `uruntime` runtime — so there
+was never a squashfs superblock to find, no matter how correctly the offset
+was computed.
+
+`uruntime` is format-agnostic from the CLI: it exposes a classic-AppImageKit-
+compatible `--appimage-extract` that extracts either backing format to
+`./squashfs-root` (name kept for compat), so the fix lets the AppImage
+extract itself instead of reimplementing that logic. Repacking goes through
+the same `appimagetool` binary `quick-sharun.sh` uses, so it re-embeds
+whichever format the tool defaults to. See `.github/workflows/_build.yml`,
+"Inject libjpeg.so.8 into AppImage".
+
+Also placed the injected library next to the other WebKit shared libs
+(auto-detected via wherever `libwebkit2gtk-4.1.so*` landed) rather than a
+flat `usr/lib/`, since sharun preserves the original multiarch subdirectory
+(`usr/lib/x86_64-linux-gnu/`) and only that directory is on the bundle's
+`LD_LIBRARY_PATH`.
 
 # libjpeg.so.8 missing from sharun-based AppImage
 
