@@ -120,11 +120,13 @@ jobs:
           cd "$(dirname "$APPIMAGE")"
           APPIMAGE_NAME="$(basename "$APPIMAGE")"
 
-          # Locate the embedded squashfs by its magic bytes ("hsqs") rather
-          # than trying to read a stored offset — AppImage doesn't keep one
-          # in the last 8 bytes (that read garbage: dd then rejected it with
-          # "cannot skip: Invalid argument").
-          OFFSET=$(LC_ALL=C grep -a -b -o -m1 "hsqs" "./$APPIMAGE_NAME" | head -1 | cut -d: -f1)
+          # Compute the squashfs offset the same way the AppImage runtime
+          # itself does: it starts right after the ELF section header table
+          # (e_shoff + e_shentsize * e_shnum). Neither the last-8-bytes read
+          # nor a search for the "hsqs" magic are reliable — the former isn't
+          # where AppImage stores anything, and the latter can false-positive
+          # on the magic bytes appearing earlier inside the runtime stub.
+          OFFSET=$(python3 -c "import struct; f = open('./$APPIMAGE_NAME', 'rb'); f.seek(0x28); shoff = struct.unpack('<Q', f.read(8))[0]; f.seek(0x3a); shentsize, shnum = struct.unpack('<HH', f.read(4)); print(shoff + shentsize * shnum)")
 
           # Extract and unpack the squashfs portion. iflag=skip_bytes lets dd
           # skip an exact byte offset while still reading in large blocks
