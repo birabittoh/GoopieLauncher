@@ -188,7 +188,7 @@ jobs:
 
           "./$APPIMAGE_NAME" --appimage-extract
 
-          if [ ! -d squashfs-root ] || [ -z "$(find squashfs-root -mindepth 1 -print -quit)" ]; then
+          if [ ! -d squashfs-root ] || [ -z "$(find -L squashfs-root -mindepth 1 -print -quit)" ]; then
             echo "::error::--appimage-extract produced no (or an empty) ./squashfs-root; contents of cwd:"
             find . -maxdepth 3
             exit 1
@@ -202,19 +202,19 @@ jobs:
           # dump the whole tree on any mismatch instead of silently
           # constructing bogus empty paths (see git history for what that
           # looks like: a "Permission denied" writing to filesystem root).
-          WEBKIT_SO="$(find squashfs-root -name 'libwebkit2gtk-4.1.so*' | head -1)"
+          WEBKIT_SO="$(find -L squashfs-root -name 'libwebkit2gtk-4.1.so*' | head -1)"
           if [ -z "$WEBKIT_SO" ]; then
             echo "::error::Could not find libwebkit2gtk-4.1.so* anywhere under squashfs-root; full tree:"
-            find squashfs-root
+            find -L squashfs-root
             exit 1
           fi
           LIBDIR="$(dirname "$WEBKIT_SO")"
           mkdir -p "$LIBDIR"
 
-          WEBKIT_BINS="$(find squashfs-root -path '*webkit2gtk-4.1/WebKit*Process')"
+          WEBKIT_BINS="$(find -L squashfs-root -path '*webkit2gtk-4.1/WebKit*Process')"
           if [ -z "$WEBKIT_BINS" ]; then
             echo "::error::Could not find any WebKit*Process binaries under squashfs-root; full tree:"
-            find squashfs-root
+            find -L squashfs-root
             exit 1
           fi
 
@@ -239,10 +239,10 @@ jobs:
           # hook tokens) that a launch-time hook resolves to $APPDIR/lib, so
           # PT_INTERP below has a stable path to point at across runs/mounts.
           WEBKIT_LIB_TOKEN="goopie-webkit-lib"
-          HOOK_DIR="$(find squashfs-root -maxdepth 2 -type d -name bin | head -1)"
+          HOOK_DIR="$(find -L squashfs-root -maxdepth 2 -type d -name bin | head -1)"
           if [ -z "$HOOK_DIR" ]; then
             echo "::error::Could not find a bin/ dir under squashfs-root to drop the launch hook in; full tree:"
-            find squashfs-root
+            find -L squashfs-root
             exit 1
           fi
           printf '%s\n' "LC_ALL=C ln -sfn \"\$APPDIR\"/lib /tmp/$WEBKIT_LIB_TOKEN || :" \
