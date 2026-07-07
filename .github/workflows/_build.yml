@@ -42,7 +42,7 @@ on:
 
 jobs:
   build:
-    runs-on: ${{ inputs.platform == 'linux' && 'ubuntu-22.04' || 'windows-latest' }}
+    runs-on: ${{ inputs.platform == 'linux' && 'ubuntu-24.04' || 'windows-latest' }}
 
     steps:
       - name: Checkout
@@ -74,14 +74,17 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libappindicator3-dev \
             librsvg2-dev \
+            libjpeg-turbo8 \
+            libicu74 \
+            xvfb \
             patchelf \
             build-essential \
             libssl-dev \
             pkg-config
 
       # ── Tauri CLI ──────────────────────────────────────────────────────────
-      - name: Install Tauri CLI
-        run: cargo install tauri-cli --version '^2' --locked
+      - name: Install Tauri CLI (truly-portable-appimage branch)
+        run: cargo install tauri-cli --git https://github.com/tauri-apps/tauri --branch feat/truly-portable-appimage --locked
 
       # ── Pre-built website (when provided by the caller) ────────────────────
       - name: Download pre-built offline site
@@ -95,13 +98,179 @@ jobs:
       - name: Build (Linux)
         if: inputs.platform == 'linux'
         # .deb is intentionally not built — see "Stage/Upload .deb" below for why.
-        run: cargo tauri build --bundles appimage
+        # The new sharun-based AppImage format is enabled via the env var
+        run: script -q -c "cargo tauri build --bundles appimage" /dev/null
         env:
+          TAURI_BUNDLER_NEW_APPIMAGE_FORMAT: "true"
           VERSION: ${{ inputs.version }}
           GOOPIE_OAUTH_CLIENT_ID: ${{ secrets.GOOPIE_OAUTH_CLIENT_ID }}
           GOOPIE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOPIE_OAUTH_CLIENT_SECRET }}
           GOOPIE_RELEASES_API: ${{ vars.GOOPIE_RELEASES_API }}
           GOOPIE_DISCORD_CLIENT_ID: ${{ vars.GOOPIE_DISCORD_CLIENT_ID }}
+
+      # quick-sharun misses some of WebKit's runtime-only deps (dlopen'd
+      # image loaders, ICU, libxml2, etc. — seen so far: libjpeg.so.8,
+      # libicudata/i18n/uc.so.74, libxml2.so.2), so detect whatever is
+      # actually missing from the WebKit subprocess binaries and inject it
+      # into the built AppImage by extracting, adding the missing libraries,
+      # and repacking.
+      #
+      # There's a second, independent bug on top of that: the WebKit*Process
+      # binaries are plain copies of the system webkit2gtk helper executables
+      # and carry neither an RPATH nor a patched interpreter. quick-sharun's
+      # own LD_LIBRARY_PATH plumbing only covers the *main* process (it execs
+      # goopie-launcher via an explicit `ld-linux --library-path` invocation,
+      # never setting a real env var), so it's invisible to anything WebKit
+      # forks internally — those helpers fall through to the *host's* system
+      # libraries entirely. That's fine as long as the host happens to ship
+      # compatible libs (which is how this went unnoticed), but breaks the
+      # moment the host's version drifts (e.g. the host's ICU major version
+      # moved on from the one this WebKit build needs), and it's the reason
+      # bundling one missing library was never sufficient on its own.
+      # Confirmed by hand: patchelf'ing an RPATH onto the WebKit*Process
+      # binaries fixes *direct* deps, but DT_RUNPATH (patchelf's default)
+      # doesn't apply to transitive deps (e.g. libxml2 needed by
+      # libwebkit2gtk, not by WebKitWebProcess itself) — needs classic
+      # DT_RPATH (`--force-rpath`). And once transitive deps resolve into the
+      # bundle, the loader also picks up the bundle's own libc.so.6 (since
+      # RPATH is now searched process-wide), which is incompatible with the
+      # *host's* dynamic loader still in charge (WebKit's helpers keep their
+      # original system PT_INTERP) — "undefined symbol: __nptl_change_stack_perm,
+      # version GLIBC_PRIVATE". So the helpers also need their PT_INTERP
+      # repointed at the bundled ld-linux-x86-64.so.2 to match the bundled
+      # libc. PT_INTERP is resolved directly by the kernel with no $ORIGIN or
+      # env-var expansion, so it can't reference the AppImage's mount path,
+      # which only exists at run time and changes per launch. quick-sharun
+      # already solves exactly this class of problem for other hardcoded
+      # paths it finds (see the `*.hook` files it drops in bin/, which
+      # symlink a fixed /tmp/<token> to $APPDIR/lib et al. at every launch) —
+      # so this step adds its own hook using the same trick, and points
+      # PT_INTERP at that fixed, stable /tmp path instead of depending on
+      # quick-sharun's own (randomly-named, may not always exist) tokens.
+      #
+      # The three earlier attempts at the "extract, patch, repack" mechanics
+      # (see git log) all assumed the payload was a squashfs image and tried
+      # to locate/unpack it by hand (a stored offset, a magic-byte search,
+      # the ELF section-header math) — every one failed with an
+      # invalid-superblock error. The bundler (tauri-apps/tauri's
+      # feat/truly-portable-appimage branch) actually runs pkgforge-dev's
+      # quick-sharun.sh, which packs the AppDir with pkgforge-dev's own
+      # `appimagetool`: that tool embeds a DwarFS image (not squashfs) behind
+      # the `uruntime` runtime. So there was never a squashfs superblock to
+      # find. uruntime is format-agnostic from the outside: `--appimage-extract`
+      # extracts either backing format to ./squashfs-root (name kept for
+      # AppImageKit compat), so let the AppImage extract itself instead of
+      # reimplementing that. Repacking goes through the same appimagetool
+      # quick-sharun.sh uses, which re-embeds whichever format it was built
+      # to use.
+      - name: Inject missing shared libraries into AppImage
+        if: inputs.platform == 'linux'
+        shell: bash
+        run: |
+          set -eux
+          APPIMAGE="$(ls src-tauri/target/release/bundle/appimage/*.AppImage | head -1)"
+          ORIG_DIR="$(cd "$(dirname "$APPIMAGE")" && pwd)"
+          ORIG_NAME="$(basename "$APPIMAGE")"
+
+          # productName has a space in it ("Goopie Launcher"), so the raw
+          # bundled AppImage filename does too. Work on a space-free copy:
+          # uruntime's --appimage-extract silently produced an empty
+          # ./squashfs-root (100% progress, zero files) when invoked against
+          # the space-containing path — consistent with the sort of thing
+          # that breaks when a small tool's internal glue does unquoted
+          # argv[0]/$0 handling.
+          WORKDIR="$RUNNER_TEMP/appimage-inject"
+          mkdir -p "$WORKDIR"
+          APPIMAGE_NAME="goopie-launcher.AppImage"
+          cp "$ORIG_DIR/$ORIG_NAME" "$WORKDIR/$APPIMAGE_NAME"
+          cd "$WORKDIR"
+          chmod +x "./$APPIMAGE_NAME"
+
+          "./$APPIMAGE_NAME" --appimage-extract
+
+          if [ ! -d squashfs-root ] || [ -z "$(find -H squashfs-root -mindepth 1 -print -quit)" ]; then
+            echo "::error::--appimage-extract produced no (or an empty) ./squashfs-root; contents of cwd:"
+            find . -maxdepth 3
+            exit 1
+          fi
+
+          # Missing libraries go next to the other WebKit shared libs sharun
+          # already bundled (a flat lib/, not a multiarch usr/lib/<arch>/
+          # subdir, despite what earlier revisions of this step assumed).
+          # quick-sharun.sh is fetched from its upstream main branch on every
+          # build (not pinned), so its output layout can drift between runs —
+          # dump the whole tree on any mismatch instead of silently
+          # constructing bogus empty paths (see git history for what that
+          # looks like: a "Permission denied" writing to filesystem root).
+          WEBKIT_SO="$(find -H squashfs-root -name 'libwebkit2gtk-4.1.so*' | head -1)"
+          if [ -z "$WEBKIT_SO" ]; then
+            echo "::error::Could not find libwebkit2gtk-4.1.so* anywhere under squashfs-root; full tree:"
+            find -H squashfs-root
+            exit 1
+          fi
+          LIBDIR="$(dirname "$WEBKIT_SO")"
+          mkdir -p "$LIBDIR"
+
+          WEBKIT_BINS="$(find -H squashfs-root -path '*webkit2gtk-4.1/WebKit*Process')"
+          if [ -z "$WEBKIT_BINS" ]; then
+            echo "::error::Could not find any WebKit*Process binaries under squashfs-root; full tree:"
+            find -H squashfs-root
+            exit 1
+          fi
+
+          # Ask the WebKit subprocess binaries themselves what they're still
+          # missing (via ldd) instead of hardcoding one library name at a
+          # time. `cp -L` dereferences the host's soname symlink so the AppDir
+          # gets the real file, not a symlink that would dangle inside it.
+          for BIN in $WEBKIT_BINS; do
+            while read -r MISSING_LIB; do
+              [ -n "$MISSING_LIB" ] || continue
+              [ -e "$LIBDIR/$MISSING_LIB" ] && continue
+              HOST_PATH="$(find /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu -name "$MISSING_LIB" 2>/dev/null | head -1)"
+              if [ -z "$HOST_PATH" ]; then
+                echo "::error::Could not find $MISSING_LIB on the host to inject into the AppImage"
+                exit 1
+              fi
+              cp -L "$HOST_PATH" "$LIBDIR/$MISSING_LIB"
+            done < <(ldd "$BIN" | awk '/not found/ {print $1}')
+          done
+
+          # Fixed token (namespaced to avoid clashing with quick-sharun's own
+          # hook tokens) that a launch-time hook resolves to $APPDIR/lib, so
+          # PT_INTERP below has a stable path to point at across runs/mounts.
+          WEBKIT_LIB_TOKEN="goopie-webkit-lib"
+          HOOK_DIR="$(find -H squashfs-root -maxdepth 1 -type d -name bin | head -1)"
+          if [ -z "$HOOK_DIR" ]; then
+            echo "::error::Could not find a bin/ dir under squashfs-root to drop the launch hook in; full tree:"
+            find -H squashfs-root
+            exit 1
+          fi
+          printf '%s\n' "LC_ALL=C ln -sfn \"\$APPDIR\"/lib /tmp/$WEBKIT_LIB_TOKEN || :" \
+            > "$HOOK_DIR/00-goopie-webkit-libpath.hook"
+          chmod +x "$HOOK_DIR/00-goopie-webkit-libpath.hook"
+
+          for BIN in $WEBKIT_BINS; do
+            patchelf --set-interpreter "/tmp/$WEBKIT_LIB_TOKEN/ld-linux-x86-64.so.2" "$BIN"
+            patchelf --force-rpath --set-rpath '$ORIGIN/..' "$BIN"
+          done
+
+          ARCH="$(uname -m)"
+          APPIMAGETOOL="$RUNNER_TEMP/appimagetool"
+          if [ ! -x "$APPIMAGETOOL" ]; then
+            curl -Lso "$APPIMAGETOOL" "https://github.com/pkgforge-dev/appimagetool/releases/latest/download/appimagetool-${ARCH}-linux"
+            chmod +x "$APPIMAGETOOL"
+          fi
+
+          rm -f "./$APPIMAGE_NAME"
+          "$APPIMAGETOOL" squashfs-root -o . -n "$APPIMAGE_NAME"
+          chmod +x "./$APPIMAGE_NAME"
+
+          # Copy the patched AppImage back over the original (space-containing)
+          # name/location so the later "Stage artifacts (Linux)" step finds it.
+          cp "./$APPIMAGE_NAME" "$ORIG_DIR/$ORIG_NAME"
+          chmod +x "$ORIG_DIR/$ORIG_NAME"
+
+          rm -rf "$WORKDIR"
 
       - name: Build (Windows)
         if: inputs.platform == 'windows'
