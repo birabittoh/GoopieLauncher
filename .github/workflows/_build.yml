@@ -205,9 +205,8 @@ jobs:
           # PT_INTERP below has a stable path to point at across runs/mounts.
           WEBKIT_LIB_TOKEN="goopie-webkit-lib"
           HOOK_DIR="$(find squashfs-root -maxdepth 1 -type d -name bin)"
-          cat > "$HOOK_DIR/00-goopie-webkit-libpath.hook" <<EOF
-LC_ALL=C ln -sfn "\$APPDIR"/lib /tmp/$WEBKIT_LIB_TOKEN || :
-EOF
+          printf '%s\n' "LC_ALL=C ln -sfn \"\$APPDIR\"/lib /tmp/$WEBKIT_LIB_TOKEN || :" \
+            > "$HOOK_DIR/00-goopie-webkit-libpath.hook"
           chmod +x "$HOOK_DIR/00-goopie-webkit-libpath.hook"
 
           for BIN in $WEBKIT_BINS; do
