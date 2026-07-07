@@ -239,7 +239,7 @@ jobs:
           # hook tokens) that a launch-time hook resolves to $APPDIR/lib, so
           # PT_INTERP below has a stable path to point at across runs/mounts.
           WEBKIT_LIB_TOKEN="goopie-webkit-lib"
-          HOOK_DIR="$(find -H squashfs-root -maxdepth 2 -type d -name bin | head -1)"
+          HOOK_DIR="$(find -H squashfs-root -maxdepth 1 -type d -name bin | head -1)"
           if [ -z "$HOOK_DIR" ]; then
             echo "::error::Could not find a bin/ dir under squashfs-root to drop the launch hook in; full tree:"
             find -H squashfs-root
