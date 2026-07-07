@@ -169,7 +169,7 @@ jobs:
         run: |
           set -eux
           APPIMAGE="$(ls src-tauri/target/release/bundle/appimage/*.AppImage | head -1)"
-          ORIG_DIR="$(dirname "$APPIMAGE")"
+          ORIG_DIR="$(cd "$(dirname "$APPIMAGE")" && pwd)"
           ORIG_NAME="$(basename "$APPIMAGE")"
 
           # productName has a space in it ("Goopie Launcher"), so the raw
