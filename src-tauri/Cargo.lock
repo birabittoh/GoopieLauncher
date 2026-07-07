@@ -1674,6 +1674,7 @@ dependencies = [
  "tauri-build",
  "tempfile",
  "toml 0.8.2",
+ "toml_edit 0.20.2",
  "winreg 0.52.0",
  "xdvdfs",
  "zip",

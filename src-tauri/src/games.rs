@@ -666,6 +666,7 @@ pub fn resolve_launch(
     custom_exe: &str,
     set_data_root: bool,
     mount_update: bool,
+    cvar_types: &str,
 ) -> Result<LaunchSpec, String> {
     let dir = build_dir(game, build);
 
@@ -690,19 +691,22 @@ pub fn resolve_launch(
     }
 
     let language = crate::config::get_language();
-    let mut args: Vec<String> = vec![format!("--user_language={}", language)];
+
+    // ReXGlue games crash on an unrecognized CLI argument, so every cvar
+    // except `game_data_root` is delivered through the per-build
+    // `<exe_dir>/<game>.toml` config instead (ReXGlue reads that reliably).
+    // `game_data_root` is the sole documented exception: most games do not
+    // read it from the TOML, so it stays a CLI arg (and is *also* written to
+    // the TOML below, where it's silently ignored, in case a given build does
+    // read it from there).
+    let mut managed: Vec<(String, String)> = vec![("user_language".to_string(), language.to_string())];
 
     if set_data_root {
-        args.push(format!(
-            "--game_data_root={}",
-            game_root(game).join("assets").to_string_lossy()
-        ));
+        let assets_dir = game_root(game).join("assets");
+        managed.push(("game_data_root".to_string(), assets_dir.to_string_lossy().into_owned()));
         let update_dir = game_root(game).join("update");
         if mount_update && update_dir.is_dir() && std::fs::read_dir(&update_dir).map(|mut d| d.next().is_some()).unwrap_or(false) {
-            args.push(format!(
-                "--update_data_root={}",
-                update_dir.to_string_lossy()
-            ));
+            managed.push(("update_data_root".to_string(), update_dir.to_string_lossy().into_owned()));
         }
     } else {
         ensure_assets_link(game, &dir);
@@ -715,22 +719,36 @@ pub fn resolve_launch(
         let _ = std::fs::remove_file(&xexp);
     }
 
-    if !cvar_args.is_empty() {
-        for token in cvar_args.split_whitespace() {
-            args.push(token.to_string());
-        }
-    }
+    managed.extend(parse_cvar_pairs(cvar_args));
 
     // Mods are entirely disk-driven (see `crate::mods`): if `mods/` exists and
     // has at least one enabled mod, hand the SDK the overlay root and the
     // reconciled, priority-ordered enabled list. Independent of `set_data_root`/
     // `mount_update` so this applies whether or not assets/update are mounted.
     if let Some(enabled) = crate::mods::enabled_mods_arg(game) {
+        managed.push(("mods_data_root".to_string(), crate::mods::mods_dir(game).to_string_lossy().into_owned()));
+        managed.push(("enabled_mods".to_string(), enabled));
+    }
+
+    // Keys the launcher itself owns in the TOML: if one of these isn't active
+    // this launch (e.g. `mount_update` toggled off), drop it from the file
+    // instead of leaving a stale value the game would otherwise re-apply.
+    const OWNED_KEYS: &[&str] = &[
+        "user_language", "game_data_root", "update_data_root",
+        "mods_data_root", "enabled_mods",
+    ];
+    let types = parse_cvar_types(cvar_types);
+    let exe_dir = exe_path.parent().unwrap_or(&dir);
+    write_cvars_config(&exe_dir.join(format!("{}.toml", game)), &managed, OWNED_KEYS, &types);
+
+    // Only `game_data_root` stays on the command line — everything else now
+    // lives in the TOML written above.
+    let mut args: Vec<String> = Vec::new();
+    if set_data_root {
         args.push(format!(
-            "--mods_data_root={}",
-            crate::mods::mods_dir(game).to_string_lossy()
+            "--game_data_root={}",
+            game_root(game).join("assets").to_string_lossy()
         ));
-        args.push(format!("--enabled_mods={}", enabled));
     }
 
     // On Linux, transparently route Windows PE executables through Proton.
@@ -752,8 +770,8 @@ pub fn resolve_launch(
     Ok(LaunchSpec { program: exe_path, args, cwd, env: Vec::new() })
 }
 
-pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data_root: bool, mount_update: bool) -> Result<std::process::Child, String> {
-    let spec = resolve_launch(game, build, cvar_args, custom_exe, set_data_root, mount_update)?;
+pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data_root: bool, mount_update: bool, cvar_types: &str) -> Result<std::process::Child, String> {
+    let spec = resolve_launch(game, build, cvar_args, custom_exe, set_data_root, mount_update, cvar_types)?;
 
     eprintln!(
         "[games] Launching: {} {:?}",
@@ -1000,6 +1018,126 @@ fn next_log_name(logs_dir: &Path, game: &str) -> String {
     format!("{}_{:03}.log", game, max_seq + 1)
 }
 
+/// Split a launcher `cvar_args` string into `(tag, value)` pairs. The string
+/// mixes two forms emitted by the frontend — `--tag=value` (e.g.
+/// `--license_mask=1`) and `--tag value` (e.g. `--gpu_plugin xenos`) — plus
+/// bare flags (`--flag`, treated as boolean `true`). Splits on whitespace,
+/// matching the tokenization the CLI path used previously, so a value
+/// containing spaces is still split across two tokens (pre-existing
+/// limitation, not a regression).
+fn parse_cvar_pairs(cvar_args: &str) -> Vec<(String, String)> {
+    let tokens: Vec<&str> = cvar_args.split_whitespace().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < tokens.len() {
+        let key = tokens[i].trim_start_matches("--");
+        if let Some(eq) = key.find('=') {
+            out.push((key[..eq].to_string(), key[eq + 1..].to_string()));
+            i += 1;
+        } else if i + 1 < tokens.len() && !tokens[i + 1].starts_with("--") {
+            out.push((key.to_string(), tokens[i + 1].to_string()));
+            i += 2;
+        } else {
+            out.push((key.to_string(), "true".to_string()));
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Parse the optional JSON `cvar_types` map (`tag -> "Int"|"Float"|"Bool"|"Enum"`)
+/// sent by newer websites. Returns an empty map on missing/invalid JSON, in
+/// which case [`cvar_to_item`] falls back to inferring each value's TOML type.
+fn parse_cvar_types(cvar_types: &str) -> std::collections::HashMap<String, String> {
+    if cvar_types.is_empty() {
+        return std::collections::HashMap::new();
+    }
+    serde_json::from_str(cvar_types).unwrap_or_default()
+}
+
+/// Convert a formatted cvar value into a correctly-typed TOML item.
+///
+/// When `declared` (from the frontend's `CVarType`) is present, it wins: this
+/// is what lets a numeric-looking `Enum` value (e.g. `"60"`) be written as a
+/// quoted TOML string rather than a bare integer. Without a declared type
+/// (older website, or a launcher-managed key like `game_data_root`), the type
+/// is inferred from the value string: `true`/`false` -> bool, an integer ->
+/// int, a value with a digit that parses as a float -> float (the digit guard
+/// keeps `inf`/`nan` as strings), otherwise a quoted string (Windows paths
+/// included — `toml_edit` escapes backslashes automatically).
+fn cvar_to_item(raw: &str, declared: Option<&str>) -> toml_edit::Item {
+    match declared {
+        Some("Bool") => return toml_edit::value(raw == "true" || raw == "1"),
+        Some("Int") => {
+            if let Ok(i) = raw.parse::<i64>() {
+                return toml_edit::value(i);
+            }
+        }
+        Some("Float") => {
+            if let Ok(f) = raw.parse::<f64>() {
+                return toml_edit::value(f);
+            }
+        }
+        Some("Enum") | Some("String") => return toml_edit::value(raw.to_string()),
+        _ => {}
+    }
+    match raw {
+        "true" => toml_edit::value(true),
+        "false" => toml_edit::value(false),
+        _ => {
+            if let Ok(i) = raw.parse::<i64>() {
+                toml_edit::value(i)
+            } else if raw.chars().any(|c| c.is_ascii_digit()) {
+                if let Ok(f) = raw.parse::<f64>() {
+                    toml_edit::value(f)
+                } else {
+                    toml_edit::value(raw.to_string())
+                }
+            } else {
+                toml_edit::value(raw.to_string())
+            }
+        }
+    }
+}
+
+/// Merge-write `pairs` into the per-build `<game>.toml` cvar config at `path`,
+/// preserving every other key, comment, and blank line already in the file
+/// (format-preserving via `toml_edit`, unlike a `toml::Value` round-trip).
+///
+/// `owned_keys` lists the launcher-managed keys that may or may not be active
+/// this launch (e.g. `update_data_root` when there's no update mounted); any
+/// of them not present in `pairs` is removed so a stale value from a previous
+/// launch doesn't linger and get silently re-applied.
+///
+/// Non-fatal on any I/O or parse error — the game still launches with
+/// whatever's on disk (or nothing, if the file is missing/corrupt).
+fn write_cvars_config(
+    path: &Path,
+    pairs: &[(String, String)],
+    owned_keys: &[&str],
+    types: &std::collections::HashMap<String, String>,
+) {
+    let mut doc = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|c| c.parse::<toml_edit::Document>().ok())
+        .unwrap_or_default();
+
+    let active: HashSet<&str> = pairs.iter().map(|(k, _)| k.as_str()).collect();
+    for key in owned_keys {
+        if !active.contains(key) {
+            doc.remove(key);
+        }
+    }
+
+    for (key, val) in pairs {
+        doc[key.as_str()] = cvar_to_item(val, types.get(key).map(|s| s.as_str()));
+    }
+
+    if let Err(e) = std::fs::write(path, doc.to_string()) {
+        eprintln!("[games] Failed to write cvar config {}: {}", path.display(), e);
+    }
+}
+
 /// Remove the given `key = value` lines from a `<game>.toml` cvar config, leaving
 /// other settings untouched. Used to drop launcher-managed cvars the game would
 /// otherwise persist and re-apply (and which, as Wine paths, can corrupt the TOML).
@@ -1201,6 +1339,83 @@ mod tests {
         std::fs::create_dir_all(&sub).unwrap();
         std::fs::write(sub.join("mygame.exe"), b"MZ sub").unwrap();
         assert_eq!(find_main_executable(tmp.path(), "mygame"), "mygame.exe");
+    }
+
+    #[test]
+    fn parse_cvar_pairs_handles_eq_space_and_bare_forms() {
+        let pairs = parse_cvar_pairs("--license_mask=1 --gpu_plugin xenos --flag");
+        assert_eq!(
+            pairs,
+            vec![
+                ("license_mask".to_string(), "1".to_string()),
+                ("gpu_plugin".to_string(), "xenos".to_string()),
+                ("flag".to_string(), "true".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_cvar_pairs_empty_string() {
+        assert!(parse_cvar_pairs("").is_empty());
+    }
+
+    #[test]
+    fn cvar_to_item_infers_without_declared_type() {
+        assert_eq!(cvar_to_item("true", None).to_string(), "true");
+        assert_eq!(cvar_to_item("false", None).to_string(), "false");
+        assert_eq!(cvar_to_item("42", None).to_string(), "42");
+        assert_eq!(cvar_to_item("3.5", None).to_string(), "3.5");
+        assert_eq!(cvar_to_item("xenos", None).to_string(), "\"xenos\"");
+        // Not a plain digit-only float: stays a string.
+        assert_eq!(cvar_to_item("1.0.0", None).to_string(), "\"1.0.0\"");
+        // Windows path: stays a string. `toml_edit` prefers a literal
+        // (single-quoted) string for backslash-heavy values, which is valid
+        // TOML and needs no escaping.
+        let item = cvar_to_item(r"C:\Users\foo\assets", None);
+        assert_eq!(
+            item.as_str().map(str::to_string),
+            Some(r"C:\Users\foo\assets".to_string())
+        );
+    }
+
+    #[test]
+    fn cvar_to_item_declared_type_wins_over_inference() {
+        // A numeric-looking Enum value must stay a quoted string, not become
+        // a bare integer — this is the whole point of plumbing declared types.
+        assert_eq!(cvar_to_item("60", Some("Enum")).to_string(), "\"60\"");
+        assert_eq!(cvar_to_item("1", Some("Bool")).to_string(), "true");
+        assert_eq!(cvar_to_item("2", Some("Int")).to_string(), "2");
+        assert_eq!(cvar_to_item("2", Some("Float")).to_string(), "2.0");
+    }
+
+    #[test]
+    fn write_cvars_config_merges_preserves_and_removes_stale_owned_keys() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("mygame.toml");
+        std::fs::write(
+            &path,
+            "# shipped keybinds\nkeybind_a = \"Z\"\ngpu_plugin = \"xenos\"\nupdate_data_root = \"/old/stale/update\"\n",
+        )
+        .unwrap();
+
+        let owned_keys: &[&str] = &["user_language", "update_data_root"];
+        let types = std::collections::HashMap::new();
+
+        // First launch: set user_language, no update_data_root active.
+        write_cvars_config(
+            &path,
+            &[("user_language".to_string(), "en".to_string())],
+            owned_keys,
+            &types,
+        );
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("# shipped keybinds"));
+        assert!(contents.contains("keybind_a = \"Z\""));
+        assert!(contents.contains("gpu_plugin = \"xenos\""));
+        assert!(contents.contains("user_language = \"en\""));
+        // Stale owned key not active this launch must be removed.
+        assert!(!contents.contains("update_data_root"));
     }
 }
 
