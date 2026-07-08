@@ -94,7 +94,10 @@
   // declared type (Int/Float/Bool/Enum), so the launcher can write it into
   // the game's TOML config with the correct TOML type instead of guessing
   // from the formatted value string. Older launchers simply ignore it.
-  window.Play            = function (g, b, c, e, r, m, t) { return call('Play', [g, b, c, e, r, m, t]); };
+  // `mo` (8th, optional) is whether this game's mods menu is turned on; when
+  // false, the launcher won't push `mods_data_root`/`enabled_mods` cvars even
+  // if enabled mods exist on disk. Defaults to true on older shims/websites.
+  window.Play            = function (g, b, c, e, r, m, t, mo) { return call('Play', [g, b, c, e, r, m, t, mo]); };
   // Running-game tracking: poll to drive the Play/Close button and the
   // "close the running game to start this one?" confirmation prompt.
   window.isGameRunning   = function ()    { return call('isGameRunning', []); };

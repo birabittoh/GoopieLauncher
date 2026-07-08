@@ -667,6 +667,7 @@ pub fn resolve_launch(
     set_data_root: bool,
     mount_update: bool,
     cvar_types: &str,
+    mods_enabled: bool,
 ) -> Result<LaunchSpec, String> {
     let dir = build_dir(game, build);
 
@@ -725,9 +726,14 @@ pub fn resolve_launch(
     // has at least one enabled mod, hand the SDK the overlay root and the
     // reconciled, priority-ordered enabled list. Independent of `set_data_root`/
     // `mount_update` so this applies whether or not assets/update are mounted.
-    if let Some(enabled) = crate::mods::enabled_mods_arg(game) {
-        managed.push(("mods_data_root".to_string(), crate::mods::mods_dir(game).to_string_lossy().into_owned()));
-        managed.push(("enabled_mods".to_string(), enabled));
+    // Gated on `mods_enabled` (the website's per-game mods-menu toggle) so a
+    // game that's had its Mods tab turned off never gets these cvars, even if
+    // an earlier install left enabled mods on disk.
+    if mods_enabled {
+        if let Some(enabled) = crate::mods::enabled_mods_arg(game) {
+            managed.push(("mods_data_root".to_string(), crate::mods::mods_dir(game).to_string_lossy().into_owned()));
+            managed.push(("enabled_mods".to_string(), enabled));
+        }
     }
 
     // Keys the launcher itself owns in the TOML: if one of these isn't active
@@ -770,8 +776,8 @@ pub fn resolve_launch(
     Ok(LaunchSpec { program: exe_path, args, cwd, env: Vec::new() })
 }
 
-pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data_root: bool, mount_update: bool, cvar_types: &str) -> Result<std::process::Child, String> {
-    let spec = resolve_launch(game, build, cvar_args, custom_exe, set_data_root, mount_update, cvar_types)?;
+pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data_root: bool, mount_update: bool, cvar_types: &str, mods_enabled: bool) -> Result<std::process::Child, String> {
+    let spec = resolve_launch(game, build, cvar_args, custom_exe, set_data_root, mount_update, cvar_types, mods_enabled)?;
 
     eprintln!(
         "[games] Launching: {} {:?}",

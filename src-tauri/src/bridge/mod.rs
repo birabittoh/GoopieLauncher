@@ -213,7 +213,7 @@ impl AppState {
 /// Spawn `game`/`build` and start tracking it as the running game, replacing
 /// (and killing) any previously-running game first — mirrors the "closing the
 /// running game loses unsaved progress" behaviour the frontend warns about.
-fn launch_and_track(state: &Arc<AppState>, game: String, build: String, cvar_args: String, custom_exe: String, set_data_root: bool, mount_update: bool, cvar_types: String) {
+fn launch_and_track(state: &Arc<AppState>, game: String, build: String, cvar_args: String, custom_exe: String, set_data_root: bool, mount_update: bool, cvar_types: String, mods_enabled: bool) {
     kill_running_game(state);
     *state.last_launch_error.lock().unwrap() = None;
 
@@ -221,23 +221,28 @@ fn launch_and_track(state: &Arc<AppState>, game: String, build: String, cvar_arg
     // `conflicts` pair, a code mod with no binary for this OS, ...) must never
     // reach the SDK — it would hard-fail Setup() with a much less actionable
     // message. Reuse the existing pollable launch-error channel so the
-    // frontend's Play flow needs no changes to surface this.
-    let installed_sidecar = games::get_installed_version(&game, &build);
-    let installed_version = games::json_extract_str(&installed_sidecar, "version");
-    let validation = crate::mods::validate(&game, &installed_version);
-    if !validation.ok {
-        let reasons: Vec<&str> = validation.issues.iter()
-            .filter(|i| i.kind == "error")
-            .map(|i| i.message.as_str())
-            .collect();
-        *state.last_launch_error.lock().unwrap() = Some(format!(
-            "Can't launch: {}. Open Manage → Mods to fix.",
-            reasons.join(" ")
-        ));
-        return;
+    // frontend's Play flow needs no changes to surface this. Skipped entirely
+    // when the game's mods menu is off: `games::play` won't hand the SDK any
+    // mods cvars in that case, so a stale/broken enabled-mods layout on disk
+    // can't block launch.
+    if mods_enabled {
+        let installed_sidecar = games::get_installed_version(&game, &build);
+        let installed_version = games::json_extract_str(&installed_sidecar, "version");
+        let validation = crate::mods::validate(&game, &installed_version);
+        if !validation.ok {
+            let reasons: Vec<&str> = validation.issues.iter()
+                .filter(|i| i.kind == "error")
+                .map(|i| i.message.as_str())
+                .collect();
+            *state.last_launch_error.lock().unwrap() = Some(format!(
+                "Can't launch: {}. Open Manage → Mods to fix.",
+                reasons.join(" ")
+            ));
+            return;
+        }
     }
 
-    let child = match games::play(&game, &build, &cvar_args, &custom_exe, set_data_root, mount_update, &cvar_types) {
+    let child = match games::play(&game, &build, &cvar_args, &custom_exe, set_data_root, mount_update, &cvar_types, mods_enabled) {
         Ok(child) => child,
         Err(msg) => {
             *state.last_launch_error.lock().unwrap() = Some(msg);
@@ -744,9 +749,13 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
             // for a missing index, and `games::play` falls back to inferring
             // each value's TOML type from its formatted string.
             let cvar_types = str_arg(&args, 6);
+            // Optional (8th): whether this game's mods menu is turned on.
+            // Defaults to true so older websites that don't send it keep the
+            // prior (always disk-driven) behaviour.
+            let mods_enabled = bool_arg(&args, 7, true);
             let state_clone = Arc::clone(state);
             std::thread::spawn(move || {
-                launch_and_track(&state_clone, game, build, cvar_args, custom_exe, set_data_root, mount_update, cvar_types);
+                launch_and_track(&state_clone, game, build, cvar_args, custom_exe, set_data_root, mount_update, cvar_types, mods_enabled);
             });
             Value::Null
         }
