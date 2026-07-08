@@ -49,5 +49,7 @@ jobs:
 
       # No GOOPIE_RELEASES_API / OAuth secrets needed: the releases API is
       # option_env! (compiles without it) and the e2e test supplies a local mock.
+      # --skip-manual-e2e: the protected-path case pops a real UAC prompt on
+      # Windows that nothing in CI can approve, so it would just hang.
       - name: Run unit + end-to-end tests
-        run: python run_tests.py
+        run: python run_tests.py --skip-manual-e2e

@@ -9,9 +9,14 @@ Phases:
 Exits non-zero if any phase fails. ``set-version.py`` runs this before cutting a
 release, so a red test blocks the publish.
 
+On Windows, the e2e phase includes a protected-path case that requires
+approving a real UAC prompt — pass ``--skip-manual-e2e`` to omit it (e.g. in
+CI, where nothing can click the prompt).
+
 Usage:
-  python run_tests.py            # unit + build + e2e
+  python run_tests.py                 # unit + build + e2e (incl. UAC case on Windows)
   python run_tests.py --unit-only
+  python run_tests.py --skip-manual-e2e  # skip the UAC-elevation e2e case
 """
 
 from __future__ import annotations
@@ -46,6 +51,12 @@ def main() -> int:
     parser.add_argument(
         "--unit-only", action="store_true", help="Run only the Rust unit tests"
     )
+    parser.add_argument(
+        "--skip-manual-e2e",
+        action="store_true",
+        help="Skip the protected-path (UAC elevation) e2e case — it's run "
+        "by default on Windows and requires approving a real UAC prompt",
+    )
     args = parser.parse_args()
 
     env = cargo_env()
@@ -70,6 +81,13 @@ def main() -> int:
     # 3. End-to-end tests.
     e2e_env = dict(os.environ)
     e2e_env["GOOPIE_LAUNCHER_BIN"] = str(binary)
+    if IS_WINDOWS and not args.skip_manual_e2e:
+        print(
+            "\nA UAC prompt will appear during the e2e run — approve it "
+            "to let the protected-path case pass.",
+            flush=True,
+        )
+        e2e_env["GOOPIE_E2E_MANUAL"] = "1"
     run([sys.executable, str(ROOT / "tests" / "e2e" / "test_self_update.py")], env=e2e_env)
 
     print("\nAll tests passed.")

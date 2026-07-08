@@ -8,6 +8,16 @@ flag's previous value is saved and restored. On Windows it also asserts the
 
 Run directly (``python tests/e2e/test_self_update.py``) or via ``run_tests.py``,
 which builds the debug binary first.
+
+A third, Windows-only case covers installing to a protected path (like
+``Program Files``), which requires the launcher's UAC-elevation fallback to
+kick in. That case pops a real UAC consent prompt a human must approve, and
+runs only when ``GOOPIE_E2E_MANUAL=1`` is set in the environment. It's on by
+default when driven through ``run_tests.py`` on Windows (which is what
+``set-version.py`` uses) — pass ``run_tests.py --skip-manual-e2e`` to omit
+it, as CI does, so nothing hangs waiting for a prompt no one can click.
+Running this file directly does *not* set the env var, so Case 3 is skipped
+unless you export ``GOOPIE_E2E_MANUAL=1`` yourself first.
 """
 
 from __future__ import annotations
@@ -29,6 +39,7 @@ import util_config as cfg  # noqa: E402
 IS_WINDOWS = sys.platform.startswith("win")
 NEW_TAG = "v9999.0.0"
 NEW_VERSION = "9999.0.0"
+MANUAL_ENV = "GOOPIE_E2E_MANUAL"
 
 
 def launcher_binary() -> Path:
@@ -79,6 +90,65 @@ def wait_until(predicate, timeout: float = 10.0, interval: float = 0.25) -> bool
             return True
         time.sleep(interval)
     return predicate()
+
+
+def run_protected_path_case(
+    binary: Path, server: MockReleaseServer, config_dir: Path, marker: str
+) -> bool:
+    """Install into a directory ACL'd like Program Files (no write access to
+    the current non-elevated token) and confirm self-update still lands, via
+    the UAC-elevation fallback in ``apply_update``. Requires a human to
+    approve the UAC prompt that will appear."""
+    print("\n=== Case 3 (manual): protected install path requires UAC elevation ===")
+    protected_marker = uuid.uuid4().hex
+    protected_dir = binary.parent.parent / f"goopie-e2e-protected-{protected_marker}"
+    protected_dir.mkdir(parents=True, exist_ok=True)
+    target = protected_dir / binary.name
+    shutil.copy2(binary, target)
+
+    test_uninstall_key = f"GoopieLauncherE2E-{protected_marker}-protected"
+    cfg.seed_uninstall_entry(test_uninstall_key, protected_dir, "0.0.0")
+    cfg.lock_directory_for_elevation(protected_dir)
+
+    ok = True
+    try:
+        print("A UAC prompt should appear shortly — APPROVE it to let the test proceed.")
+        print("(Waiting up to 60s for the elevated copy to complete.)")
+        proc = run_check(target, server.releases_url, config_dir)
+
+        def replaced() -> bool:
+            try:
+                return marker.encode() in target.read_bytes()
+            except OSError:
+                return False
+
+        if not wait_until(replaced, timeout=60.0):
+            ok = False
+            print(
+                "FAIL: binary in protected path was not replaced — did you "
+                "approve the UAC prompt?",
+                file=sys.stderr,
+            )
+            print(f"  stdout={proc.stdout!r} stderr={proc.stderr!r}", file=sys.stderr)
+        else:
+            print("PASS: self-update elevated past the protected ACL and replaced the binary")
+
+        updated = wait_until(
+            lambda: cfg.read_uninstall_display_version(test_uninstall_key) == NEW_VERSION,
+            timeout=15.0,
+        )
+        if updated:
+            print(f"PASS: Control Panel DisplayVersion updated to {NEW_VERSION} (protected path)")
+        else:
+            ok = False
+            got = cfg.read_uninstall_display_version(test_uninstall_key)
+            print(f"FAIL: DisplayVersion not updated for protected path (got {got!r})", file=sys.stderr)
+    finally:
+        cfg.unlock_directory(protected_dir)
+        cfg.delete_uninstall_entry(test_uninstall_key)
+        shutil.rmtree(protected_dir, ignore_errors=True)
+
+    return ok
 
 
 def run() -> bool:
@@ -158,6 +228,16 @@ def run() -> bool:
             )
         else:
             print("PASS: update not applied and reported 'disabled' when flag is off")
+
+        # ── Case 3 (manual): protected install path requires UAC elevation ────
+        if IS_WINDOWS and os.environ.get(MANUAL_ENV) == "1":
+            auto.set(True)  # Case 2 above left it off.
+            ok = run_protected_path_case(binary, server, config_dir, marker) and ok
+        elif IS_WINDOWS:
+            print(
+                f"\nSKIP: protected-path elevation case requires manual UAC "
+                f"approval; set {MANUAL_ENV}=1 to run it locally."
+            )
     finally:
         auto.restore()
         update_cache.restore()

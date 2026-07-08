@@ -15,6 +15,8 @@ save/restore dance is still implemented for fidelity.
 
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -275,3 +277,64 @@ def delete_uninstall_entry(test_key: str) -> None:
         winreg.DeleteKey(winreg.HKEY_CURRENT_USER, path)
     except FileNotFoundError:
         pass
+
+
+# ── Protected-path ACL simulation (Windows only) ───────────────────────────────
+#
+# Real Program Files denies Write to a standard (non-elevated) token but allows
+# it once the process is UAC-elevated, because the Administrators group is
+# present in an admin user's token but flagged "use for deny only" until they
+# elevate — the user's own account SID stays fully enabled either way. These
+# helpers reproduce that exact shape on a throwaway directory so a test can
+# exercise the self-update's elevation fallback without touching the real
+# Program Files.
+
+_ADMINISTRATORS_SID = "*S-1-5-32-544"
+_SYSTEM_SID = "*S-1-5-18"
+
+
+def lock_directory_for_elevation(path: Path) -> None:
+    """Strip write access to `path` for the current user's non-elevated token
+    (read/execute only), while granting Administrators/SYSTEM full control —
+    which only takes effect once a process is actually UAC-elevated.
+
+    Run as two separate recursive icacls passes (strip inheritance, then
+    grant), each with its own trailing ``/T``. Combining ``/inheritance:r``
+    and ``/grant:r`` in a single icacls invocation does not reliably cascade
+    the grants down to files that already existed inside `path` (e.g. a
+    binary copied there before locking) — they end up with an empty DACL
+    (nobody, not even SYSTEM, can open them) instead of the intended ACEs."""
+    user = f"{os.environ.get('USERDOMAIN', '.')}\\{os.environ['USERNAME']}"
+    subprocess.run(
+        ["icacls", str(path), "/inheritance:r", "/T", "/C"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        [
+            "icacls",
+            str(path),
+            "/grant:r",
+            f"{user}:(OI)(CI)RX",
+            "/grant:r",
+            f"{_ADMINISTRATORS_SID}:(OI)(CI)F",
+            "/grant:r",
+            f"{_SYSTEM_SID}:(OI)(CI)F",
+            "/T",
+            "/C",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def unlock_directory(path: Path) -> None:
+    """Undo `lock_directory_for_elevation`, restoring inherited permissions."""
+    subprocess.run(
+        ["icacls", str(path), "/reset", "/T", "/C"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )

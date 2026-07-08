@@ -104,7 +104,11 @@ def run(*cmd: str) -> None:
 
 
 def run_tests() -> None:
-    """Run the unit + end-to-end test suite, aborting the release on failure."""
+    """Run the unit + end-to-end test suite, aborting the release on failure.
+
+    On Windows this includes the protected-path (UAC elevation) e2e case,
+    which pops a real UAC prompt — approve it for the release to proceed.
+    """
     print("Running tests before release...")
     try:
         subprocess.run([sys.executable, str(ROOT / "run_tests.py")], cwd=ROOT, check=True)
