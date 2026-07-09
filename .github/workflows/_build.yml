@@ -42,7 +42,7 @@ on:
 
 jobs:
   build:
-    runs-on: ${{ inputs.platform == 'linux' && 'ubuntu-24.04' || 'windows-latest' }}
+    runs-on: ${{ inputs.platform == 'linux' && (inputs.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04') || 'windows-latest' }}
 
     steps:
       - name: Checkout

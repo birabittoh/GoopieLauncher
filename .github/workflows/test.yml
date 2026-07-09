@@ -7,12 +7,21 @@ on:
 
 jobs:
   test:
-    name: Test ${{ matrix.platform }}
-    runs-on: ${{ matrix.platform == 'linux' && 'ubuntu-24.04' || 'windows-latest' }}
+    name: Test ${{ matrix.platform }}/${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        platform: [linux, windows]
+        include:
+          - platform: linux
+            arch: x86_64
+            os: ubuntu-24.04
+          - platform: linux
+            arch: aarch64
+            os: ubuntu-24.04-arm
+          - platform: windows
+            arch: x86_64
+            os: windows-latest
 
     steps:
       - name: Checkout

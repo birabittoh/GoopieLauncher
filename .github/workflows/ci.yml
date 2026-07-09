@@ -56,6 +56,18 @@ jobs:
       arch: x86_64
       website-artifact: offline-site
 
+  build-linux-arm64:
+    needs: [prepare, build-website]
+    if: needs.prepare.outputs.is-release != 'true'
+    name: Build linux/aarch64
+    uses: ./.github/workflows/_build.yml
+    secrets: inherit
+    with:
+      version: ${{ needs.prepare.outputs.sha-short }}
+      platform: linux
+      arch: aarch64
+      website-artifact: offline-site
+
   build-windows:
     needs: [prepare, build-website]
     if: needs.prepare.outputs.is-release != 'true'

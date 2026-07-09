@@ -61,6 +61,19 @@ jobs:
       versioned_filename: false
       website-artifact: offline-site
 
+  build-linux-arm64:
+    needs: build-website
+    name: Build linux/aarch64
+    uses: ./.github/workflows/_build.yml
+    secrets: inherit
+    with:
+      version: ${{ github.ref_name }}
+      platform: linux
+      arch: aarch64
+      # Published assets are versionless — the launcher self-updates regardless.
+      versioned_filename: false
+      website-artifact: offline-site
+
   build-windows:
     needs: build-website
     name: Build windows/x86_64
@@ -75,7 +88,7 @@ jobs:
 
   release:
     name: Create GitHub Release
-    needs: [build-linux, build-windows]
+    needs: [build-linux, build-linux-arm64, build-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
