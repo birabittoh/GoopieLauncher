@@ -700,6 +700,29 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
             crate::mods::auto_sort(&str_arg(&args, 0));
             Value::Null
         }
+        "installModFromUrl" => {
+            // Fire-and-forget, same reasoning as `installModArchives`: the
+            // download + extraction can take a while, and the bridge is a
+            // synchronous XHR. The frontend polls
+            // `isInstallingMods`/`getModInstallReport` and `getDownloadProgress`
+            // (see `mods::install_from_url_async`).
+            let game = str_arg(&args, 0);
+            let url = str_arg(&args, 1);
+            let desired_id = str_arg(&args, 2);
+            let state_clone = Arc::clone(state);
+            std::thread::spawn(move || crate::mods::install_from_url_async(state_clone, game, url, desired_id));
+            Value::Null
+        }
+        "fetchModMetadata" => {
+            // Synchronous: this is a single small metadata-only fetch (used at
+            // submission time to auto-fill a catalog entry), not a full mod
+            // install, so it doesn't warrant the background-thread + poll
+            // pattern above.
+            match crate::mods::fetch_metadata(&str_arg(&args, 0)) {
+                Ok(meta) => json!(meta),
+                Err(e) => json!({ "error": e }),
+            }
+        }
         "Update" => {
             let game_name  = str_arg(&args, 0);
             let release_url = str_arg(&args, 1);

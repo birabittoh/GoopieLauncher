@@ -140,6 +140,12 @@
   // reasons proactively, before the player even tries to launch.
   window.getModValidation   = function (g)         { return call('getModValidation', [g]); };
   window.autoSortMods       = function (g)         { return call('autoSortMods', [g]); };
+  // installModFromUrl is fire-and-forget like installModArchives — poll
+  // isInstallingMods/getModInstallReport, and getDownloadProgress for the
+  // download percentage. fetchModMetadata is synchronous (single small
+  // metadata-only fetch, used at submission time).
+  window.installModFromUrl  = function (g, u, id)  { return call('installModFromUrl', [g, u, id]); };
+  window.fetchModMetadata   = function (u)         { return call('fetchModMetadata', [u]); };
 
   // ── Global drag-and-drop (catalogue-wide matching) ───────────────────────────
   // `catalogue` is a JSON string (or array) of trimmed Game entries — see

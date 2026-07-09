@@ -733,11 +733,17 @@ struct InstalledMod {
 /// naive "derive id from zip, then extract into mods/<id>/" approach would
 /// produce when the zip already has a `foo/` prefix on every entry.
 ///
+/// `desired_id`, when set, overrides the zip/top-level-dir-derived id
+/// entirely (sanitised the same way) — used by [`install_from_url`] so a mod
+/// installed from a catalog entry always lands under the catalog's
+/// deterministic `modId`, regardless of what the release's zip happens to be
+/// named/structured like.
+///
 /// If a mod with the same id is already installed, the new one replaces it
 /// when its `mod.toml` `version` is greater than or equal to the installed
 /// one's (see [`version_gte`]) — otherwise the install is rejected so an
 /// older drop can't clobber a newer install.
-fn install_one_archive(mods_dir: &std::path::Path, zip_path: &str) -> std::io::Result<InstalledMod> {
+fn install_one_archive(mods_dir: &std::path::Path, zip_path: &str, desired_id: Option<&str>) -> std::io::Result<InstalledMod> {
     std::fs::create_dir_all(mods_dir)?;
     let staging = tempfile::Builder::new()
         .prefix(".mod-extract-")
@@ -747,7 +753,7 @@ fn install_one_archive(mods_dir: &std::path::Path, zip_path: &str) -> std::io::R
 
     let top_level: Vec<std::fs::DirEntry> = std::fs::read_dir(staging.path())?.filter_map(|e| e.ok()).collect();
 
-    let (id, content_src): (String, PathBuf) = if top_level.len() == 1 && top_level[0].file_type().map(|t| t.is_dir()).unwrap_or(false) {
+    let (derived_id, content_src): (String, PathBuf) = if top_level.len() == 1 && top_level[0].file_type().map(|t| t.is_dir()).unwrap_or(false) {
         let name = top_level[0].file_name().to_string_lossy().into_owned();
         (sanitize_mod_id(&name), top_level[0].path())
     } else {
@@ -756,6 +762,10 @@ fn install_one_archive(mods_dir: &std::path::Path, zip_path: &str) -> std::io::R
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "mod".to_string());
         (sanitize_mod_id(&stem), staging.path().to_path_buf())
+    };
+    let id = match desired_id {
+        Some(d) => sanitize_mod_id(d),
+        None => derived_id,
     };
 
     let new_version = read_manifest_at(&content_src.join(MANIFEST_NAME)).version.unwrap_or_default();
@@ -800,7 +810,7 @@ pub fn install_archives(game: &str, paths: &[String]) -> InstallReport {
             continue;
         }
 
-        match install_one_archive(&dir, path) {
+        match install_one_archive(&dir, path, None) {
             Ok(installed) => {
                 if !entries.iter().any(|e| e.id == installed.id) {
                     entries.push(SidecarEntry { id: installed.id.clone(), enabled: true });
@@ -843,6 +853,160 @@ pub fn install_archives_async(state: std::sync::Arc<crate::AppState>, game: Stri
     let report = install_archives(&game, &paths);
     *state.mod_install_report.lock().unwrap() = Some(report);
     state.mod_installing.store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Download a zip from `url` (e.g. a GitHub release asset's
+/// `browser_download_url`) into a temp file, wrapping [`download::download_file`]
+/// with a caller-supplied progress callback and always cleaning up the temp
+/// file afterward regardless of outcome.
+fn download_to_temp_zip(url: &str, progress: Option<&crate::download::ProgressCallback>) -> Result<tempfile::TempPath, String> {
+    let tmp = tempfile::Builder::new()
+        .prefix("goopie-mod-")
+        .suffix(".zip")
+        .tempfile()
+        .map_err(|e| format!("failed to create temp file: {e}"))?;
+    let path = tmp.into_temp_path();
+    crate::download::download_file(url, &path.to_string_lossy(), progress)
+        .map_err(|e| format!("download failed: {e}"))?;
+    Ok(path)
+}
+
+/// Download a mod zip from `url` and install it under `game`'s `mods/`,
+/// forcing the extracted folder's id to `desired_id` (see [`install_one_archive`])
+/// instead of deriving it from the zip/top-level-dir name — used for
+/// catalog-sourced installs, where the catalog's deterministic `modId` is how
+/// installed state is correlated back to the Firestore entry. Auto-sorts
+/// afterward, same as [`install_archives`]. Returns a single-entry
+/// [`InstallReport`] so callers can reuse the same report shape/UI as a local
+/// zip install.
+pub fn install_from_url(game: &str, url: &str, desired_id: &str) -> InstallReport {
+    install_from_url_with_progress(game, url, desired_id, None)
+}
+
+fn install_from_url_with_progress(
+    game: &str,
+    url: &str,
+    desired_id: &str,
+    progress: Option<&crate::download::ProgressCallback>,
+) -> InstallReport {
+    let dir = mods_dir(game);
+    let mut entries = reconcile(game);
+
+    let zip_path = match download_to_temp_zip(url, progress) {
+        Ok(path) => path,
+        Err(e) => {
+            return InstallReport {
+                results: vec![InstallResult { path: url.to_string(), ok: false, message: e }],
+            };
+        }
+    };
+
+    let result = match install_one_archive(&dir, &zip_path.to_string_lossy(), Some(desired_id)) {
+        Ok(installed) => {
+            if !entries.iter().any(|e| e.id == installed.id) {
+                entries.push(SidecarEntry { id: installed.id.clone(), enabled: true });
+            }
+            let version_suffix = if installed.version.is_empty() { String::new() } else { format!(" (v{})", installed.version) };
+            let message = if installed.updated {
+                format!("Updated \"{}\"{}", installed.id, version_suffix)
+            } else {
+                format!("Installed \"{}\"{}", installed.id, version_suffix)
+            };
+            InstallResult { path: url.to_string(), ok: true, message }
+        }
+        Err(e) => InstallResult { path: url.to_string(), ok: false, message: e.to_string() },
+    };
+
+    let sorted = sort_entries(game, entries);
+    write_sidecar(game, &Sidecar { mods: sorted });
+
+    InstallReport { results: vec![result] }
+}
+
+/// Run [`install_from_url`] on a background thread, publishing the result to
+/// `state.mod_install_report` and toggling `state.mod_installing` around it —
+/// same pattern as [`install_archives_async`]. Additionally drives
+/// `state.download_progress`/`download_string` (the same channel
+/// `games::update` uses, polled via `getDownloadProgress`) while the zip
+/// downloads, since unlike a local sideload this involves a network transfer
+/// worth showing progress for.
+pub fn install_from_url_async(state: std::sync::Arc<crate::AppState>, game: String, url: String, desired_id: String) {
+    state.mod_installing.store(true, std::sync::atomic::Ordering::Relaxed);
+    state.download_progress.store(0, std::sync::atomic::Ordering::Relaxed);
+
+    let state_cb = std::sync::Arc::clone(&state);
+    let progress_cb: crate::download::ProgressCallback = Box::new(move |dl, tot| {
+        state_cb.set_download_progress(dl, tot);
+    });
+
+    let report = install_from_url_with_progress(&game, &url, &desired_id, Some(&progress_cb));
+
+    state.finish_download();
+    *state.mod_install_report.lock().unwrap() = Some(report);
+    state.mod_installing.store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Metadata read from a mod's `mod.toml`/`icon.png` without installing it —
+/// used to auto-fill a catalog submission's display fields from the actual
+/// release asset. Mirrors the fields of [`ModInfo`] that come purely from the
+/// manifest (no id/enabled/state, which don't exist yet for an uninstalled
+/// mod).
+#[derive(Debug, Serialize)]
+pub struct ModMetadata {
+    pub name: String,
+    pub version: String,
+    pub author: String,
+    pub description: String,
+    pub platform: Vec<String>,
+    pub requires: Vec<String>,
+    /// `data:image/png;base64,...` icon, or empty if the archive has no `icon.png`.
+    pub icon: String,
+}
+
+/// Download the zip at `url` to a temp file, extract it to a temp dir, and
+/// read its `mod.toml`/`icon.png` without installing anything permanently —
+/// used at mod-submission time to auto-fill a catalog entry's metadata from
+/// the actual release asset. Locates the manifest the same way
+/// [`install_one_archive`] locates the mod's content root (a single
+/// top-level directory, or the extracted tree itself if flat), so metadata
+/// matches what would actually get installed.
+pub fn fetch_metadata(url: &str) -> Result<ModMetadata, String> {
+    let zip_path = download_to_temp_zip(url, None)?;
+
+    let extract_dir = tempfile::Builder::new()
+        .prefix("goopie-mod-meta-")
+        .tempdir()
+        .map_err(|e| format!("failed to create temp dir: {e}"))?;
+
+    crate::archive::extract_zip(&zip_path.to_string_lossy(), &extract_dir.path().to_string_lossy())
+        .map_err(|e| format!("failed to extract zip: {e}"))?;
+
+    let top_level: Vec<std::fs::DirEntry> = std::fs::read_dir(extract_dir.path())
+        .map_err(|e| format!("failed to read extracted zip: {e}"))?
+        .filter_map(|e| e.ok())
+        .collect();
+
+    let content_root: PathBuf = if top_level.len() == 1 && top_level[0].file_type().map(|t| t.is_dir()).unwrap_or(false) {
+        top_level[0].path()
+    } else {
+        extract_dir.path().to_path_buf()
+    };
+
+    let manifest = read_manifest_at(&content_root.join(MANIFEST_NAME));
+    let icon_path = content_root.join(ICON_NAME);
+    let icon = std::fs::read(&icon_path)
+        .map(|bytes| format!("data:image/png;base64,{}", B64.encode(bytes)))
+        .unwrap_or_default();
+
+    Ok(ModMetadata {
+        name: manifest.name.unwrap_or_default(),
+        version: manifest.version.unwrap_or_default(),
+        author: manifest.author.unwrap_or_default(),
+        description: manifest.description.unwrap_or_default(),
+        platform: manifest.platform,
+        requires: manifest.requires.iter().map(format_requirement).collect(),
+        icon,
+    })
 }
 
 /// Open the mods folder in the system file manager (creating it if needed).
@@ -902,7 +1066,7 @@ mod tests {
             ("game/DATA/sound/bgmusic.wma", b"fake audio"),
         ]);
 
-        let installed = install_one_archive(&mods_dir, &zip_path.to_string_lossy()).unwrap();
+        let installed = install_one_archive(&mods_dir, &zip_path.to_string_lossy(), None).unwrap();
         assert_eq!(installed.id, "badapple");
         assert!(!installed.updated);
 
@@ -926,7 +1090,7 @@ mod tests {
             ("game/DATA/thing.bin", b"data"),
         ]);
 
-        let installed = install_one_archive(&mods_dir, &zip_path.to_string_lossy()).unwrap();
+        let installed = install_one_archive(&mods_dir, &zip_path.to_string_lossy(), None).unwrap();
         assert_eq!(installed.id, "loose-files");
         assert!(mods_dir.join("loose-files/mod.toml").is_file());
     }
@@ -947,7 +1111,7 @@ mod tests {
         let zip_path = tmp.path().join("badapple.zip");
         make_prefixed_zip(&zip_path, "badapple", &[("mod.toml", b"version = \"0.9.0\"\n")]);
 
-        let err = install_one_archive(&mods_dir, &zip_path.to_string_lossy()).unwrap_err();
+        let err = install_one_archive(&mods_dir, &zip_path.to_string_lossy(), None).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
         assert!(mods_dir.join("badapple/mod.toml").is_file(), "the older drop must not have touched the existing install");
         assert_eq!(std::fs::read_to_string(mods_dir.join("badapple/mod.toml")).unwrap(), "version = \"1.0.0\"\n");
@@ -965,7 +1129,7 @@ mod tests {
         let zip_path = tmp.path().join("badapple.zip");
         make_prefixed_zip(&zip_path, "badapple", &[("mod.toml", b"version = \"1.0.0\"\ndescription = \"new\"\n")]);
 
-        let installed = install_one_archive(&mods_dir, &zip_path.to_string_lossy()).unwrap();
+        let installed = install_one_archive(&mods_dir, &zip_path.to_string_lossy(), None).unwrap();
         assert_eq!(installed.id, "badapple");
         assert!(installed.updated);
         assert_eq!(installed.version, "1.0.0");
