@@ -739,7 +739,7 @@ pub fn resolve_launch(
     ];
     let types = parse_cvar_types(cvar_types);
     let exe_dir = exe_path.parent().unwrap_or(&dir);
-    write_cvars_config(&exe_dir.join(format!("{}.toml", game)), &managed, OWNED_KEYS, &types);
+    write_cvars_config(&exe_dir.join(format!("{}.toml", game)), &managed, OWNED_KEYS, &types)?;
 
     // Only `game_data_root` stays on the command line — everything else now
     // lives in the TOML written above.
@@ -1055,6 +1055,45 @@ fn parse_cvar_types(cvar_types: &str) -> std::collections::HashMap<String, Strin
     serde_json::from_str(cvar_types).unwrap_or_default()
 }
 
+/// Build a TOML item holding `raw` as a double-quoted ("basic") string,
+/// bypassing `toml_edit`'s own style inference.
+///
+/// `toml_edit::value(String)` picks a single-quoted *literal* string
+/// (`'C:\Users\...'`) whenever the value contains a backslash, since that
+/// needs no escaping. That's valid TOML, but ReXGlue's own config writer only
+/// ever emits double-quoted strings — when the game re-saves the file (e.g.
+/// from its F4 menu) it can't round-trip our literal strings and wipes the
+/// rest of the file back to just what was open in that menu. Escaping the
+/// value ourselves and parsing it back forces `toml_edit` to keep the exact
+/// double-quoted representation we hand it, matching ReXGlue's writer.
+fn toml_basic_string_item(raw: &str) -> toml_edit::Item {
+    let mut escaped = String::with_capacity(raw.len() + 2);
+    escaped.push('"');
+    for ch in raw.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\u{8}' => escaped.push_str("\\b"),
+            '\t' => escaped.push_str("\\t"),
+            '\n' => escaped.push_str("\\n"),
+            '\u{c}' => escaped.push_str("\\f"),
+            '\r' => escaped.push_str("\\r"),
+            c if (c as u32) <= 0x1f || c as u32 == 0x7f => {
+                use std::fmt::Write;
+                write!(escaped, "\\u{:04X}", c as u32).unwrap();
+            }
+            c => escaped.push(c),
+        }
+    }
+    escaped.push('"');
+    // `escaped` is a well-formed TOML basic string literal by construction,
+    // so this can only fail if `toml_edit` itself has a parsing bug.
+    let value: toml_edit::Value = escaped
+        .parse()
+        .unwrap_or_else(|_| toml_edit::Value::from(raw.to_string()));
+    toml_edit::Item::Value(value)
+}
+
 /// Convert a formatted cvar value into a correctly-typed TOML item.
 ///
 /// When `declared` (from the frontend's `CVarType`) is present, it wins: this
@@ -1063,8 +1102,10 @@ fn parse_cvar_types(cvar_types: &str) -> std::collections::HashMap<String, Strin
 /// (older website, or a launcher-managed key like `game_data_root`), the type
 /// is inferred from the value string: `true`/`false` -> bool, an integer ->
 /// int, a value with a digit that parses as a float -> float (the digit guard
-/// keeps `inf`/`nan` as strings), otherwise a quoted string (Windows paths
-/// included — `toml_edit` escapes backslashes automatically).
+/// keeps `inf`/`nan` as strings), otherwise a quoted string. All strings
+/// (Windows paths included) go through [`toml_basic_string_item`] so they're
+/// always double-quoted, never the single-quoted literal style ReXGlue's own
+/// writer can't round-trip.
 fn cvar_to_item(raw: &str, declared: Option<&str>) -> toml_edit::Item {
     match declared {
         Some("Bool") => return toml_edit::value(raw == "true" || raw == "1"),
@@ -1078,7 +1119,7 @@ fn cvar_to_item(raw: &str, declared: Option<&str>) -> toml_edit::Item {
                 return toml_edit::value(f);
             }
         }
-        Some("Enum") | Some("String") => return toml_edit::value(raw.to_string()),
+        Some("Enum") | Some("String") => return toml_basic_string_item(raw),
         _ => {}
     }
     match raw {
@@ -1091,10 +1132,10 @@ fn cvar_to_item(raw: &str, declared: Option<&str>) -> toml_edit::Item {
                 if let Ok(f) = raw.parse::<f64>() {
                     toml_edit::value(f)
                 } else {
-                    toml_edit::value(raw.to_string())
+                    toml_basic_string_item(raw)
                 }
             } else {
-                toml_edit::value(raw.to_string())
+                toml_basic_string_item(raw)
             }
         }
     }
@@ -1109,19 +1150,64 @@ fn cvar_to_item(raw: &str, declared: Option<&str>) -> toml_edit::Item {
 /// of them not present in `pairs` is removed so a stale value from a previous
 /// launch doesn't linger and get silently re-applied.
 ///
-/// Non-fatal on any I/O or parse error — the game still launches with
-/// whatever's on disk (or nothing, if the file is missing/corrupt).
+/// Every key/value goes through `toml_edit`'s own formatter rather than raw
+/// string concatenation, so characters like `\` or `"` inside a cvar value are
+/// always quoted/escaped correctly. As a second line of defense — since a
+/// game that reads a corrupt TOML crashes on startup — the serialized result
+/// is parsed back before it's written to disk. If merging into the existing
+/// file somehow produces invalid TOML (e.g. the shipped/previously-written
+/// file has content our merge can't cleanly combine with), this retries once
+/// by rebuilding the file from scratch with only `pairs` — dropping whatever
+/// was already on disk is preferable to leaving a file the game will crash
+/// on. Only if that also fails to validate does this return `Err`.
 fn write_cvars_config(
     path: &Path,
     pairs: &[(String, String)],
     owned_keys: &[&str],
     types: &std::collections::HashMap<String, String>,
-) {
-    let mut doc = std::fs::read_to_string(path)
+) -> Result<(), String> {
+    let existing = std::fs::read_to_string(path)
         .ok()
         .and_then(|c| c.parse::<toml_edit::Document>().ok())
         .unwrap_or_default();
 
+    let rendered = render_cvars_doc(existing, pairs, owned_keys, types);
+
+    // Validate against an independent parser (not just `toml_edit`'s own
+    // `Document::parse`, which produced `rendered` in the first place) so a
+    // bug in the format-preserving writer can't round-trip through itself
+    // undetected.
+    let rendered = if rendered.parse::<toml::Value>().is_ok() {
+        rendered
+    } else {
+        eprintln!(
+            "[games] Merged cvar config for {} was invalid TOML; rebuilding from scratch",
+            path.display()
+        );
+        let repaired = render_cvars_doc(toml_edit::Document::default(), pairs, owned_keys, types);
+        repaired.parse::<toml::Value>().map_err(|e| {
+            format!(
+                "Generated an invalid cvar config for {}: {}",
+                path.display(),
+                e
+            )
+        })?;
+        repaired
+    };
+
+    std::fs::write(path, rendered).map_err(|e| {
+        format!("Failed to write cvar config {}: {}", path.display(), e)
+    })
+}
+
+/// Merge `pairs` into `doc` (dropping any `owned_keys` not present in
+/// `pairs`, see [`write_cvars_config`]) and render it to a TOML string.
+fn render_cvars_doc(
+    mut doc: toml_edit::Document,
+    pairs: &[(String, String)],
+    owned_keys: &[&str],
+    types: &std::collections::HashMap<String, String>,
+) -> String {
     let active: HashSet<&str> = pairs.iter().map(|(k, _)| k.as_str()).collect();
     for key in owned_keys {
         if !active.contains(key) {
@@ -1133,9 +1219,7 @@ fn write_cvars_config(
         doc[key.as_str()] = cvar_to_item(val, types.get(key).map(|s| s.as_str()));
     }
 
-    if let Err(e) = std::fs::write(path, doc.to_string()) {
-        eprintln!("[games] Failed to write cvar config {}: {}", path.display(), e);
-    }
+    doc.to_string()
 }
 
 /// Remove the given `key = value` lines from a `<game>.toml` cvar config, leaving
@@ -1368,14 +1452,16 @@ mod tests {
         assert_eq!(cvar_to_item("xenos", None).to_string(), "\"xenos\"");
         // Not a plain digit-only float: stays a string.
         assert_eq!(cvar_to_item("1.0.0", None).to_string(), "\"1.0.0\"");
-        // Windows path: stays a string. `toml_edit` prefers a literal
-        // (single-quoted) string for backslash-heavy values, which is valid
-        // TOML and needs no escaping.
+        // Windows path: stays a string, and must be double-quoted (not
+        // `toml_edit`'s default single-quoted literal style for
+        // backslash-heavy values) — ReXGlue's own config writer can't
+        // round-trip single-quoted strings and wipes the file when it does.
         let item = cvar_to_item(r"C:\Users\foo\assets", None);
         assert_eq!(
             item.as_str().map(str::to_string),
             Some(r"C:\Users\foo\assets".to_string())
         );
+        assert_eq!(item.to_string(), r#""C:\\Users\\foo\\assets""#);
     }
 
     #[test]
@@ -1407,7 +1493,8 @@ mod tests {
             &[("user_language".to_string(), "en".to_string())],
             owned_keys,
             &types,
-        );
+        )
+        .unwrap();
 
         let contents = std::fs::read_to_string(&path).unwrap();
         assert!(contents.contains("# shipped keybinds"));
@@ -1416,6 +1503,59 @@ mod tests {
         assert!(contents.contains("user_language = \"en\""));
         // Stale owned key not active this launch must be removed.
         assert!(!contents.contains("update_data_root"));
+    }
+
+    #[test]
+    fn write_cvars_config_escapes_backslashes_and_quotes_and_round_trips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("mygame.toml");
+
+        let nasty = "C:\\Users\\foo\\bar\"baz\" \t and a \\ backslash";
+        write_cvars_config(
+            &path,
+            &[("some_cvar".to_string(), nasty.to_string())],
+            &[],
+            &std::collections::HashMap::new(),
+        )
+        .unwrap();
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        // Must be double-quoted, not `toml_edit`'s default single-quoted
+        // literal style for backslash-heavy strings — ReXGlue's own writer
+        // can't round-trip a literal string and wipes the file when it tries.
+        assert!(contents.contains("some_cvar = \""));
+        assert!(!contents.contains("some_cvar = '"));
+        // The written file must itself be valid TOML...
+        let parsed: toml::Value = contents.parse().unwrap();
+        // ...and round-trip back to the exact original value.
+        assert_eq!(
+            parsed.get("some_cvar").and_then(|v| v.as_str()),
+            Some(nasty)
+        );
+    }
+
+    #[test]
+    fn write_cvars_config_quotes_keys_with_special_characters() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("mygame.toml");
+
+        // Cvar tags aren't guaranteed to be bare-TOML-key-safe (spaces, dots,
+        // control characters); `toml_edit` must quote them rather than emit
+        // an unquoted key that would fail to parse.
+        write_cvars_config(
+            &path,
+            &[("weird key.with\ncontrol".to_string(), "value".to_string())],
+            &[],
+            &std::collections::HashMap::new(),
+        )
+        .unwrap();
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let parsed: toml::Value = contents.parse().unwrap();
+        assert_eq!(
+            parsed.get("weird key.with\ncontrol").and_then(|v| v.as_str()),
+            Some("value")
+        );
     }
 }
 
