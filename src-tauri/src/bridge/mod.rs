@@ -259,6 +259,16 @@ fn launch_and_track(state: &Arc<AppState>, game: String, build: String, cvar_arg
         started_at: Instant::now(),
     });
 
+    // Collapse to the tray while the game runs — only when both settings are
+    // on (the second is meaningless, and hidden in the UI, without the
+    // first). Hiding (not minimizing) is what actually stops WebView2 from
+    // rendering in the background.
+    if config::get_collapse_to_tray() && config::get_collapse_after_play() {
+        if let Some(window) = state.window.lock().unwrap().as_ref() {
+            let _ = window.hide();
+        }
+    }
+
     let state_clone = Arc::clone(state);
     std::thread::spawn(move || monitor_running_game(state_clone, session_id));
 }
@@ -292,6 +302,13 @@ fn monitor_running_game(state: Arc<AppState>, session_id: u64) {
                 if state.exit_after_game.load(Ordering::Relaxed) {
                     if let Some(window) = state.window.lock().unwrap().as_ref() {
                         let _ = window.close();
+                    }
+                } else if config::get_collapse_to_tray() && config::get_collapse_after_play() {
+                    // Bring the launcher back once the game the user launched
+                    // it for has exited — it was only hidden for the
+                    // duration of that session, not indefinitely.
+                    if let Some(window) = state.window.lock().unwrap().as_ref() {
+                        crate::show_main_window(window);
                     }
                 }
                 return;
@@ -1116,6 +1133,18 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
         "setDiscordPresenceEnabled" => {
             let enabled = args.first().and_then(|v| v.as_bool()).unwrap_or(true);
             discord::set_enabled(state, enabled);
+            json!(true)
+        }
+
+        // ── Tray / taskbar collapse ──────────────────────────────────────────
+        "getCollapseToTray" => json!(config::get_collapse_to_tray()),
+        "setCollapseToTray" => {
+            config::set_collapse_to_tray(bool_arg(&args, 0, true));
+            json!(true)
+        }
+        "getCollapseAfterPlay" => json!(config::get_collapse_after_play()),
+        "setCollapseAfterPlay" => {
+            config::set_collapse_after_play(bool_arg(&args, 0, true));
             json!(true)
         }
 

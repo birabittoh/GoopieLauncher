@@ -22,7 +22,11 @@ mod shortcuts;
 mod vehicles;
 
 use std::sync::Arc;
-use tauri::{DragDropEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::{TrayIconBuilder, TrayIconEvent},
+    DragDropEvent, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent,
+};
 
 pub use bridge::AppState;
 
@@ -102,6 +106,25 @@ fn auto_play_game() -> Option<String> {
     None
 }
 
+/// Un-hide/un-minimize and focus the main window — used to restore it from
+/// the tray, whether it was hidden (`CloseRequested` collapse) or just
+/// minimized by the OS.
+pub(crate) fn show_main_window(window: &tauri::WebviewWindow) {
+    let _ = window.show();
+    let _ = window.unminimize();
+    let _ = window.set_focus();
+}
+
+/// Restore the main window from the tray and jump the website to `hash`
+/// (e.g. `"#/library"`) via the same hash router used by in-page navigation.
+fn navigate_and_show(app: &tauri::AppHandle, hash: &str) {
+    if let Some(window) = app.get_webview_window("main") {
+        show_main_window(&window);
+        let js = format!("window.location.hash = '{}'", hash);
+        let _ = window.eval(&js);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Headless self-update check (no GUI): runs the update flow and exits. Must
@@ -164,6 +187,34 @@ pub fn run() {
             // .navigate() it to switch between the live site and the offline
             // bundle at runtime, without relaunching the app.
             *state_for_setup.window.lock().unwrap() = Some(window);
+
+            // Tray icon — always created (even if "collapse to tray" is off)
+            // since it's also how a hidden window gets restored, and it's
+            // harmless to show when the setting is disabled: closing just
+            // quits normally in that case and the icon offers quick access.
+            let show_item = MenuItem::with_id(app, "library", "Library", true, None::<&str>)?;
+            let settings_item = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "Quit Goopie Launcher", true, None::<&str>)?;
+            let tray_menu = Menu::with_items(app, &[&show_item, &settings_item, &quit_item])?;
+
+            TrayIconBuilder::new()
+                .icon(app.default_window_icon().cloned().expect("missing default window icon"))
+                .menu(&tray_menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "library" => navigate_and_show(app, "#/library"),
+                    "settings" => navigate_and_show(app, "#/settings"),
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click { button: tauri::tray::MouseButton::Left, button_state: tauri::tray::MouseButtonState::Up, .. } = event {
+                        if let Some(window) = tray.app_handle().get_webview_window("main") {
+                            show_main_window(&window);
+                        }
+                    }
+                })
+                .build(app)?;
 
             // Keeps AppState::goopie_reachable fresh so the website can grey
             // out "switch to online mode" while goopie.xyz is unreachable,
@@ -238,6 +289,17 @@ pub fn run() {
                     drag_has_files.store(false, std::sync::atomic::Ordering::Relaxed);
                     for webview in window.webviews() {
                         let _ = webview.eval("window.dispatchEvent(new CustomEvent('goopie:dragleave'))");
+                    }
+                }
+                // Collapse to the tray instead of quitting: a *hidden* WebView2
+                // window stops rendering entirely, which is what actually fixes
+                // the reported idle-performance hit (a minimized window keeps
+                // painting). Gated by the user's setting — off means the
+                // default OS behavior (close = quit) applies unchanged.
+                WindowEvent::CloseRequested { api, .. } => {
+                    if config::get_collapse_to_tray() {
+                        api.prevent_close();
+                        let _ = window.hide();
                     }
                 }
                 _ => {}

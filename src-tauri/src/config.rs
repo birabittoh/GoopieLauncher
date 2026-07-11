@@ -300,6 +300,80 @@ pub fn set_discord_presence_enabled(enabled: bool) {
     }
 }
 
+// ── Tray / taskbar collapse ──────────────────────────────────────────────────
+
+/// Whether closing the window should collapse the launcher to a tray icon
+/// instead of quitting. Gates the entire tray feature — see `lib.rs`'s
+/// `CloseRequested` handling. Defaults to `true` (opt-out, not opt-in).
+pub fn get_collapse_to_tray() -> bool {
+    #[cfg(windows)]
+    {
+        use winreg::{enums::*, RegKey};
+        RegKey::predef(HKEY_CURRENT_USER)
+            .open_subkey("Software\\GoopieLauncher")
+            .ok()
+            .and_then(|key| key.get_value::<u32, _>("CollapseToTray").ok())
+            .map(|v| v != 0)
+            .unwrap_or(true)
+    }
+    #[cfg(not(windows))]
+    {
+        ini_read("CollapseToTray", "1") != "0"
+    }
+}
+
+pub fn set_collapse_to_tray(enabled: bool) {
+    #[cfg(windows)]
+    {
+        use winreg::{enums::*, RegKey};
+        if let Ok((key, _)) = RegKey::predef(HKEY_CURRENT_USER)
+            .create_subkey("Software\\GoopieLauncher")
+        {
+            let _ = key.set_value("CollapseToTray", &(enabled as u32));
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        ini_write("CollapseToTray", if enabled { "1" } else { "0" });
+    }
+}
+
+/// Whether hitting Play should also collapse the launcher to the tray while
+/// the game runs. Only meaningful (and only shown in the UI) when
+/// `get_collapse_to_tray` is enabled. Defaults to `true`.
+pub fn get_collapse_after_play() -> bool {
+    #[cfg(windows)]
+    {
+        use winreg::{enums::*, RegKey};
+        RegKey::predef(HKEY_CURRENT_USER)
+            .open_subkey("Software\\GoopieLauncher")
+            .ok()
+            .and_then(|key| key.get_value::<u32, _>("CollapseAfterPlay").ok())
+            .map(|v| v != 0)
+            .unwrap_or(true)
+    }
+    #[cfg(not(windows))]
+    {
+        ini_read("CollapseAfterPlay", "1") != "0"
+    }
+}
+
+pub fn set_collapse_after_play(enabled: bool) {
+    #[cfg(windows)]
+    {
+        use winreg::{enums::*, RegKey};
+        if let Ok((key, _)) = RegKey::predef(HKEY_CURRENT_USER)
+            .create_subkey("Software\\GoopieLauncher")
+        {
+            let _ = key.set_value("CollapseAfterPlay", &(enabled as u32));
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        ini_write("CollapseAfterPlay", if enabled { "1" } else { "0" });
+    }
+}
+
 // ── Proton (Linux) ───────────────────────────────────────────────────────────
 
 /// Whether the launcher should run Windows builds through Proton on Linux.
@@ -481,5 +555,27 @@ mod tests {
         assert_eq!(ini_read_at(&path, "DiscordPresence", "1"), "0");
         ini_write_at(&path, "DiscordPresence", "1");
         assert_eq!(ini_read_at(&path, "DiscordPresence", "1"), "1");
+    }
+
+    #[test]
+    fn collapse_to_tray_round_trips_as_0_or_1_and_defaults_to_enabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.ini");
+        assert_eq!(ini_read_at(&path, "CollapseToTray", "1"), "1");
+        ini_write_at(&path, "CollapseToTray", "0");
+        assert_eq!(ini_read_at(&path, "CollapseToTray", "1"), "0");
+        ini_write_at(&path, "CollapseToTray", "1");
+        assert_eq!(ini_read_at(&path, "CollapseToTray", "1"), "1");
+    }
+
+    #[test]
+    fn collapse_after_play_round_trips_as_0_or_1_and_defaults_to_enabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.ini");
+        assert_eq!(ini_read_at(&path, "CollapseAfterPlay", "1"), "1");
+        ini_write_at(&path, "CollapseAfterPlay", "0");
+        assert_eq!(ini_read_at(&path, "CollapseAfterPlay", "1"), "0");
+        ini_write_at(&path, "CollapseAfterPlay", "1");
+        assert_eq!(ini_read_at(&path, "CollapseAfterPlay", "1"), "1");
     }
 }

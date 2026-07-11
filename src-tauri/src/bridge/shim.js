@@ -63,6 +63,12 @@
   window.getDiscordPresenceEnabled = function ()    { return call('getDiscordPresenceEnabled', []); };
   window.setDiscordPresenceEnabled = function (v)   { return call('setDiscordPresenceEnabled', [v]); };
 
+  // ── Tray / taskbar collapse ──────────────────────────────────────────────────
+  window.getCollapseToTray    = function ()    { return call('getCollapseToTray', []); };
+  window.setCollapseToTray    = function (v)   { return call('setCollapseToTray', [v]); };
+  window.getCollapseAfterPlay = function ()    { return call('getCollapseAfterPlay', []); };
+  window.setCollapseAfterPlay = function (v)   { return call('setCollapseAfterPlay', [v]); };
+
   // ── Proton (Linux) ───────────────────────────────────────────────────────────
   // On non-Linux launchers these commands are present (bridge always compiles
   // them) but getProtonInstallations returns [] and the rest are no-ops.
