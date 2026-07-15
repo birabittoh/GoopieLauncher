@@ -70,6 +70,7 @@ tempfile      = "3"
 
 # Disk free-space queries
 fs4           = "0.9"
+tauri-plugin-single-instance = "2.4.3"
 
 # Windows registry (config storage on Windows)
 # Windows .lnk shortcut creation

@@ -169,6 +169,16 @@ pub fn run() {
     let drag_has_files = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     tauri::Builder::default()
+        // Must be the first plugin registered (per tauri-plugin-single-instance
+        // docs) so it can intercept a second launch before anything else runs.
+        // A second launch just focuses/restores the existing window instead of
+        // spawning a duplicate instance — cross-platform (Windows + Linux; a
+        // no-op on macOS, which already single-instances .app bundles).
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                show_main_window(&window);
+            }
+        }))
         .manage(state)
         // Register custom schemes before .setup() so wry marks them as secure
         // contexts — preventing mixed-content blocks from the HTTPS page.
