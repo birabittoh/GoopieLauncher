@@ -18,6 +18,14 @@ default when driven through ``run_tests.py`` on Windows (which is what
 it, as CI does, so nothing hangs waiting for a prompt no one can click.
 Running this file directly does *not* set the env var, so Case 3 is skipped
 unless you export ``GOOPIE_E2E_MANUAL=1`` yourself first.
+
+A fourth, Windows-only case runs automatically (no manual step) and covers a
+restricted CurrentUser PowerShell execution policy — the actual root cause of
+a real-world report where self-update silently kept users on the old version
+even after they approved the UAC prompt. It temporarily sets the policy to
+``Restricted`` and confirms the update still applies, which only holds
+because ``apply_update`` passes ``-ExecutionPolicy Bypass`` on every nested
+``powershell`` invocation.
 """
 
 from __future__ import annotations
@@ -90,6 +98,49 @@ def wait_until(predicate, timeout: float = 10.0, interval: float = 0.25) -> bool
             return True
         time.sleep(interval)
     return predicate()
+
+
+def run_restricted_policy_case(
+    binary: Path, server: MockReleaseServer, config_dir: Path, marker: str
+) -> bool:
+    """Reproduces the reported field bug: a CurrentUser execution policy that
+    blocks unsigned local scripts (the Windows default is 'Restricted'; some
+    managed machines use 'AllSigned'). Before the `-ExecutionPolicy Bypass`
+    fix, the relaunch script silently failed to run and the launcher
+    relaunched the *old* binary with no error. Runs automatically (no UAC
+    needed — the failure mode doesn't require a protected path)."""
+    print("\n=== Case 4: restricted CurrentUser execution policy ===")
+    policy = cfg.ExecutionPolicySetting()
+    policy.save()
+    under_test = binary.parent / f"restricted-{binary.name}"
+    shutil.copy2(binary, under_test)
+
+    ok = True
+    try:
+        policy.set("Restricted")
+        proc = run_check(under_test, server.releases_url, config_dir)
+
+        def replaced() -> bool:
+            try:
+                return marker.encode() in under_test.read_bytes()
+            except OSError:
+                return False
+
+        if not wait_until(replaced, timeout=15.0):
+            ok = False
+            print(
+                "FAIL: binary was not replaced under a restricted execution "
+                "policy — the -ExecutionPolicy Bypass fix may have regressed",
+                file=sys.stderr,
+            )
+            print(f"  stdout={proc.stdout!r} stderr={proc.stderr!r}", file=sys.stderr)
+        else:
+            print("PASS: self-update applied despite a restricted CurrentUser execution policy")
+    finally:
+        policy.restore()
+        under_test.unlink(missing_ok=True)
+
+    return ok
 
 
 def run_protected_path_case(
@@ -229,15 +280,31 @@ def run() -> bool:
         else:
             print("PASS: update not applied and reported 'disabled' when flag is off")
 
-        # ── Case 3 (manual): protected install path requires UAC elevation ────
-        if IS_WINDOWS and os.environ.get(MANUAL_ENV) == "1":
+        if IS_WINDOWS:
             auto.set(True)  # Case 2 above left it off.
-            ok = run_protected_path_case(binary, server, config_dir, marker) and ok
-        elif IS_WINDOWS:
-            print(
-                f"\nSKIP: protected-path elevation case requires manual UAC "
-                f"approval; set {MANUAL_ENV}=1 to run it locally."
-            )
+
+            # ── Case 3 (manual): protected install path requires UAC elevation ─
+            if os.environ.get(MANUAL_ENV) == "1":
+                ok = run_protected_path_case(binary, server, config_dir, marker) and ok
+            else:
+                print(
+                    f"\nSKIP: protected-path elevation case requires manual UAC "
+                    f"approval; set {MANUAL_ENV}=1 to run it locally."
+                )
+
+            # ── Case 4: restricted CurrentUser execution policy ────────────────
+            # Manual-only: some CI runners lock execution policy down at a
+            # scope `-ExecutionPolicy Bypass` can't override for this test
+            # harness itself (Get-ExecutionPolicy fails before the case can
+            # even set up), so it can't run unattended in CI.
+            if os.environ.get(MANUAL_ENV) == "1":
+                ok = run_restricted_policy_case(binary, server, config_dir, marker) and ok
+            else:
+                print(
+                    f"\nSKIP: restricted execution-policy case requires "
+                    f"{MANUAL_ENV}=1 to run locally (CI runners may lock "
+                    f"execution policy at a scope this test can't override)."
+                )
     finally:
         auto.restore()
         update_cache.restore()

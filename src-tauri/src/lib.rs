@@ -133,6 +133,13 @@ pub fn run() {
         launcher::run_self_update_check();
     }
 
+    // Surface a native error dialog if the previous launch's self-update
+    // attempt failed (see `apply_update`/`check_previous_update_result`) —
+    // otherwise a failed elevated copy silently relaunches the old binary
+    // with no indication anything went wrong.
+    #[cfg(windows)]
+    launcher::check_previous_update_result();
+
     // Generate a random per-launch token and build the JS init-script before
     // Tauri starts. The custom URI scheme is registered on the Builder so wry
     // marks it as a secure context before the first navigation — preventing any

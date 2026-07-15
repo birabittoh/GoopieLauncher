@@ -338,3 +338,45 @@ def unlock_directory(path: Path) -> None:
         capture_output=True,
         text=True,
     )
+
+
+# ── PowerShell execution policy (Windows only) ─────────────────────────────────
+#
+# Reproduces the actual field bug: a stock Windows machine defaults its
+# CurrentUser scope to "Restricted" (or a managed machine to "AllSigned"),
+# which silently refuses to run the launcher's unsigned relaunch/elevate
+# scripts — even once a UAC prompt has been accepted, since the elevated
+# process still runs under the same user's CurrentUser policy. That's why
+# `apply_update` passes `-ExecutionPolicy Bypass` on every nested `powershell`
+# invocation instead of relying on the machine's configured policy.
+
+
+class ExecutionPolicySetting:
+    """Save/set/restore the CurrentUser PowerShell execution policy."""
+
+    def __init__(self) -> None:
+        self._old_value: str | None = None
+
+    def save(self) -> None:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", "Get-ExecutionPolicy -Scope CurrentUser"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self._old_value = result.stdout.strip() or "Undefined"
+
+    def set(self, policy: str) -> None:
+        subprocess.run(
+            [
+                "powershell", "-NoProfile", "-Command",
+                f"Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy {policy} -Force",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    def restore(self) -> None:
+        if self._old_value is not None:
+            self.set(self._old_value)

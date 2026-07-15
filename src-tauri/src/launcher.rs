@@ -344,6 +344,32 @@ fn staging_path() -> std::path::PathBuf {
         .join("goopie-launcher-update")
 }
 
+// ── Previous-attempt result check ─────────────────────────────────────────────
+
+/// Checks for a leftover result marker from a previous self-update attempt
+/// (written by the elevated relaunch script spawned from `apply_update`) and
+/// surfaces a native error dialog if it failed, instead of leaving the user
+/// silently stuck on the old version with no explanation. Call once early on
+/// startup; no-op if the marker is absent (the common case) or reports "OK".
+#[cfg(windows)]
+pub fn check_previous_update_result() {
+    let path = std::env::temp_dir().join("goopie-update-result.txt");
+    let Ok(contents) = std::fs::read_to_string(&path) else { return };
+    let _ = std::fs::remove_file(&path);
+
+    if let Some(msg) = contents.trim().strip_prefix("ERROR: ") {
+        eprintln!("[launcher] previous self-update failed: {msg}");
+        rfd::MessageDialog::new()
+            .set_title("Goopie Launcher Update Failed")
+            .set_description(format!(
+                "The launcher couldn't finish updating and is still running the previous version.\n\n{msg}"
+            ))
+            .set_level(rfd::MessageLevel::Error)
+            .set_buttons(rfd::MessageButtons::Ok)
+            .show();
+    }
+}
+
 // ── Platform-specific apply ───────────────────────────────────────────────────
 
 #[cfg(windows)]
@@ -384,32 +410,62 @@ fn apply_update(staging: &std::path::Path, new_version: &str) -> std::io::Result
         )
     };
 
+    // `result_file` is how the elevated (or non-elevated) copy step reports
+    // back to us: this process exits immediately after spawning the relaunch
+    // script below, so we can't observe success/failure directly. Instead the
+    // script writes "OK" or "ERROR: <message>" here, and the *next* launcher
+    // start (`check_previous_update_result`) reads it and surfaces a dialog
+    // instead of silently relaunching whatever binary ended up on disk.
+    let result_file = std::env::temp_dir().join("goopie-update-result.txt");
+
     let elevate_script = std::env::temp_dir().join("goopie-elevate.ps1");
     std::fs::write(&elevate_script, format!(
         "$ErrorActionPreference='Stop'\n\
-         Copy-Item -Force '{src}' '{dst}'\n\
+         $result='{result}'\n\
+         try {{\n\
+         \x20\x20$copied=$false\n\
+         \x20\x20for ($i=0; $i -lt 5; $i++) {{\n\
+         \x20\x20\x20\x20try {{ Copy-Item -Force '{src}' '{dst}'; $copied=$true; break }}\n\
+         \x20\x20\x20\x20catch {{ Start-Sleep -Milliseconds 700 }}\n\
+         \x20\x20}}\n\
+         \x20\x20if (-not $copied) {{ Copy-Item -Force '{src}' '{dst}' }}\n\
          {reg}\
-         Remove-Item -Force '{src}' -ErrorAction SilentlyContinue\n",
+         \x20\x20Remove-Item -Force '{src}' -ErrorAction SilentlyContinue\n\
+         \x20\x20Set-Content -Path $result -Value 'OK' -Encoding UTF8\n\
+         }} catch {{\n\
+         \x20\x20Set-Content -Path $result -Value (\"ERROR: \" + $_.Exception.Message) -Encoding UTF8\n\
+         \x20\x20exit 1\n\
+         }}\n",
         src = ps_quote(staging),
         dst = ps_quote(&current_exe),
         reg = reg_block,
+        result = ps_quote(&result_file),
     ))?;
 
     let ps = format!(
-        "$dst='{dst}'; $elev='{elev}'; \
+        "$dst='{dst}'; $elev='{elev}'; $result='{result}'; \
          Start-Sleep -Milliseconds 1500; \
+         Remove-Item -Force $result -ErrorAction SilentlyContinue; \
          $ok=$false; \
-         try {{ & powershell -NoProfile -WindowStyle Hidden -File $elev; \
-                if ($LASTEXITCODE -eq 0) {{ $ok=$true }} }} catch {{}}; \
+         try {{ $p = Start-Process powershell -Wait -WindowStyle Hidden -PassThru \
+                -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',$elev); \
+                if ($p.ExitCode -eq 0) {{ $ok=$true }} }} catch {{}}; \
          if (-not $ok) {{ \
-             try {{ Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden \
-                 -ArgumentList @('-NoProfile','-WindowStyle','Hidden','-File',$elev) \
-             }} catch {{}} \
+             try {{ $p = Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden -PassThru \
+                 -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',$elev); \
+                 if ($p.ExitCode -eq 0) {{ $ok=$true }} \
+             }} catch {{ \
+                 Set-Content -Path $result -Value (\"ERROR: update was not applied - elevation failed or was cancelled (\" + $_.Exception.Message + \")\") -Encoding UTF8 \
+             }} \
+         }}; \
+         if ((-not $ok) -and -not (Test-Path $result)) {{ \
+             Set-Content -Path $result -Value 'ERROR: update was not applied - the elevated update step exited unexpectedly' -Encoding UTF8 \
          }}; \
          Remove-Item -Force $elev -EA 0; \
          Start-Process -FilePath $dst{args}",
         dst = ps_quote(&current_exe),
         elev = ps_quote(&elevate_script),
+        result = ps_quote(&result_file),
         args = start_args,
     );
 
