@@ -16,6 +16,7 @@ mod paths;
 mod platform;
 mod proton;
 mod achievements;
+mod leaderboards;
 mod playtime;
 mod saves;
 mod shortcuts;

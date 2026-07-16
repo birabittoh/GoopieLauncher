@@ -217,6 +217,10 @@
   window.getAchievements       = function (g) { return call('getAchievements', [g]); };
   window.getAchievementSummary = function (g) { return call('getAchievementSummary', [g]); };
 
+  // ── Leaderboards ─────────────────────────────────────────────────────────────
+  window.listLeaderboardFiles = function (g)      { return call('listLeaderboardFiles', [g]); };
+  window.getLeaderboards      = function (g, ids) { return call('getLeaderboards', [g, ids]); };
+
   // ── Vehicle browser (Nuts & Bolts) ───────────────────────────────────────────
   window.getVehicleCount  = function ()       { return call('getVehicleCount', []); };
   window.getVehicle       = function (i)      { return call('getVehicle', [i]); };

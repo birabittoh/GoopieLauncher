@@ -20,7 +20,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use crate::{achievements, cloud_saves, config, discord, extract, games, launcher, offline_site, paths, platform, playtime, saves, shortcuts, vehicles};
+use crate::{achievements, cloud_saves, config, discord, extract, games, launcher, leaderboards, offline_site, paths, platform, playtime, saves, shortcuts, vehicles};
 
 // ── Shared application state ─────────────────────────────────────────────────
 
@@ -1045,6 +1045,13 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
         // ── Achievements ──────────────────────────────────────────────────────
         "getAchievements"       => json!(achievements::get_achievements(&str_arg(&args, 0))),
         "getAchievementSummary" => json!(achievements::get_achievement_summary(&str_arg(&args, 0))),
+
+        // ── Leaderboards ───────────────────────────────────────────────────────
+        "listLeaderboardFiles" => json!(leaderboards::list_leaderboard_files(&str_arg(&args, 0))),
+        "getLeaderboards" => {
+            let title_ids: Vec<String> = json_arg(&args, 1);
+            json!(leaderboards::get_leaderboards(&str_arg(&args, 0), title_ids))
+        }
 
         // ── Play-time (local-only, never synced to the cloud) ────────────────
         "getPlaytime" => playtime::get_playtime(&str_arg(&args, 0)),
