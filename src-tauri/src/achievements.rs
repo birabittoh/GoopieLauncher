@@ -221,6 +221,50 @@ fn read_unlock_state(game: &str, title_id: &str) -> HashMap<u32, u64> {
     read_unlock_state_at(&state_path)
 }
 
+/// List the title ids (filenames minus `.toml`) with unlock-state files for a
+/// game, sorted. Mirrors `leaderboards::list_leaderboard_files` — a game can
+/// accumulate more than one of these over time (e.g. it shipped under
+/// different title ids across title updates), so the Manage UI lets the user
+/// pick which file(s) to merge.
+pub fn list_achievement_files(game: &str) -> Vec<String> {
+    let Some(user_root) = paths::rex_user_folder() else { return vec![] };
+    let dir = user_root.join(game).join("achievements");
+    let Ok(entries) = fs::read_dir(&dir) else { return vec![] };
+
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| {
+            let path = e.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("toml") {
+                path.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+/// Merge unlock state across multiple title-id files for a game. When an
+/// achievement id is unlocked in more than one file, the latest filetime wins.
+fn read_unlock_state_multi(game: &str, title_ids: &[String]) -> HashMap<u32, u64> {
+    let Some(user_root) = paths::rex_user_folder() else {
+        return HashMap::new();
+    };
+    let dir = user_root.join(game).join("achievements");
+
+    let mut map = HashMap::new();
+    for title_id in title_ids {
+        let path = dir.join(format!("{}.toml", title_id));
+        for (id, filetime) in read_unlock_state_at(&path) {
+            let entry = map.entry(id).or_insert(0);
+            *entry = (*entry).max(filetime);
+        }
+    }
+    map
+}
+
 /// Core parser — separated so unit tests can pass arbitrary paths.
 fn read_unlock_state_at(path: &Path) -> HashMap<u32, u64> {
     let content = match fs::read_to_string(path) {
@@ -271,13 +315,20 @@ fn read_unlock_state_at(path: &Path) -> HashMap<u32, u64> {
 
 /// Full achievement list for the given game, with unlock state merged in.
 /// Returns an empty vec on any failure (graceful degradation).
-pub fn get_achievements(game: &str) -> Vec<Achievement> {
+///
+/// `title_ids`, when non-empty, selects which unlock-state file(s) to merge
+/// (see [`list_achievement_files`]); otherwise falls back to the single file
+/// matching the currently installed XEX's own title id.
+pub fn get_achievements(game: &str, title_ids: Option<Vec<String>>) -> Vec<Achievement> {
     let game_root = games::game_root(game);
     let Some(cache) = extract_definitions(&game_root) else {
         return vec![];
     };
 
-    let unlocked = read_unlock_state(game, &cache.title_id);
+    let unlocked = match title_ids {
+        Some(ids) if !ids.is_empty() => read_unlock_state_multi(game, &ids),
+        _ => read_unlock_state(game, &cache.title_id),
+    };
 
     cache
         .definitions
@@ -353,7 +404,7 @@ mod tests {
                 }
                 found_any = true;
 
-                let achievements = get_achievements(&game);
+                let achievements = get_achievements(&game, None);
                 eprintln!("OK {}: {} achievements", game, achievements.len());
 
                 for a in &achievements {

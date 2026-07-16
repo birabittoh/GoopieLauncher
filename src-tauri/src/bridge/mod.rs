@@ -1043,8 +1043,13 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
         }
 
         // ── Achievements ──────────────────────────────────────────────────────
-        "getAchievements"       => json!(achievements::get_achievements(&str_arg(&args, 0))),
+        "getAchievements" => {
+            let title_ids: Vec<String> = json_arg(&args, 1);
+            let title_ids = if title_ids.is_empty() { None } else { Some(title_ids) };
+            json!(achievements::get_achievements(&str_arg(&args, 0), title_ids))
+        }
         "getAchievementSummary" => json!(achievements::get_achievement_summary(&str_arg(&args, 0))),
+        "listAchievementFiles" => json!(achievements::list_achievement_files(&str_arg(&args, 0))),
 
         // ── Leaderboards ───────────────────────────────────────────────────────
         "listLeaderboardFiles" => json!(leaderboards::list_leaderboard_files(&str_arg(&args, 0))),

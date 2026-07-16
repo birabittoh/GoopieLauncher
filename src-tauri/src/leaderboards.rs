@@ -15,10 +15,30 @@ use serde::Serialize;
 
 use crate::paths;
 
+/// Mirrors `rex::system::LeaderboardColumnType` (X_USER_DATA type byte).
+/// The value is game-defined per column id — nothing on the store side knows
+/// what a given column *means*, only how its bytes were laid out, so this is
+/// as far as generic decoding can go without per-game column metadata.
+fn column_type_name(type_id: i64) -> &'static str {
+    match type_id {
+        0 => "Context",
+        1 => "Int32",
+        2 => "Int64",
+        3 => "Double",
+        4 => "WString",
+        5 => "Float",
+        6 => "Binary",
+        7 => "DateTime",
+        _ => "Unknown",
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LeaderboardColumn {
     pub id: u32,
+    #[serde(rename = "type")]
+    pub type_name: String,
     pub value: serde_json::Value,
 }
 
@@ -105,13 +125,15 @@ pub fn get_leaderboards(game: &str, title_ids: Vec<String>) -> Vec<LeaderboardBo
                         for c in col_vals {
                             let toml::Value::Table(col) = c else { continue };
                             let id = col.get("id").and_then(|v| v.as_integer()).unwrap_or(0) as u32;
+                            let type_id = col.get("type").and_then(|v| v.as_integer()).unwrap_or(1);
+                            let type_name = column_type_name(type_id).to_string();
                             let value = match col.get("value") {
                                 Some(toml::Value::Integer(i)) => serde_json::json!(i),
                                 Some(toml::Value::Float(f)) => serde_json::json!(f),
                                 Some(toml::Value::String(s)) => serde_json::json!(s),
                                 _ => serde_json::Value::Null,
                             };
-                            columns.push(LeaderboardColumn { id, value });
+                            columns.push(LeaderboardColumn { id, type_name, value });
                         }
                     }
 

@@ -214,8 +214,9 @@
   window.syncCloudSaveOnOpen     = function (g)      { return call('syncCloudSaveOnOpen', [g]); };
 
   // ── Achievements ─────────────────────────────────────────────────────────────
-  window.getAchievements       = function (g) { return call('getAchievements', [g]); };
-  window.getAchievementSummary = function (g) { return call('getAchievementSummary', [g]); };
+  window.getAchievements       = function (g, ids) { return call('getAchievements', [g, ids]); };
+  window.getAchievementSummary = function (g)      { return call('getAchievementSummary', [g]); };
+  window.listAchievementFiles  = function (g)      { return call('listAchievementFiles', [g]); };
 
   // ── Leaderboards ─────────────────────────────────────────────────────────────
   window.listLeaderboardFiles = function (g)      { return call('listLeaderboardFiles', [g]); };
