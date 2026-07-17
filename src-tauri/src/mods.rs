@@ -348,6 +348,13 @@ fn is_parseable_version(s: &str) -> bool {
     s.split('.').all(|seg| !seg.is_empty() && seg.chars().all(|c| c.is_ascii_digit()))
 }
 
+/// Formats a version string for display with exactly one leading "v",
+/// regardless of whether `s` already has one (e.g. both "1.2.6" and
+/// "v1.2.6" display as "v1.2.6").
+fn display_version(s: &str) -> String {
+    format!("v{}", s.trim().strip_prefix(['v', 'V']).unwrap_or(s.trim()))
+}
+
 fn read_icon_data_url(game: &str, id: &str) -> String {
     let path = mods_dir(game).join(id).join(ICON_NAME);
     std::fs::read(&path)
@@ -524,15 +531,18 @@ fn validate_enabled(enabled: &[(String, Manifest)], installed_game_version: &str
                 )));
             } else if !is_parseable_version(installed_game_version) {
                 issues.push(warn_issue(id, format!(
-                    "\"{id}\" requires game v{min_version} or newer, but the installed game version is unknown — can't verify."
+                    "\"{id}\" requires game {} or newer, but the installed game version is unknown — can't verify.",
+                    display_version(&min_version)
                 )));
             } else {
                 match cmp_versions(installed_game_version, &min_version) {
                     std::cmp::Ordering::Less => issues.push(err_issue(id, format!(
-                        "\"{id}\" requires game v{min_version} or newer; the installed game is v{installed_game_version}. Update the game, or disable this mod."
+                        "\"{id}\" requires game {} or newer; the installed game is {}. Update the game, or disable this mod.",
+                        display_version(&min_version), display_version(installed_game_version)
                     ))),
                     std::cmp::Ordering::Greater => issues.push(warn_issue(id, format!(
-                        "\"{id}\" targets game v{min_version}; the installed game is v{installed_game_version}, which may not be fully compatible."
+                        "\"{id}\" targets game {}; the installed game is {}, which may not be fully compatible.",
+                        display_version(&min_version), display_version(installed_game_version)
                     ))),
                     std::cmp::Ordering::Equal => {}
                 }
