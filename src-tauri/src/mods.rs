@@ -391,16 +391,31 @@ pub fn list_mods(game: &str) -> Vec<ModInfo> {
 }
 
 /// Which OS this launcher is running on, in the prefix convention a code
-/// mod's `platform` list uses (e.g. `"windows-x64"`) — see the `platform`
-/// section of `../rexglue-sdk/docs/mod-system.md`. Arch is ignored: mod
-/// platform ids are OS-keyed in practice (a mod either ships a binary for
-/// this OS or it doesn't).
+/// mod's `platform` list uses (e.g. `"windows"`) — see the `platform`
+/// section of `../rexglue-sdk/docs/mod-system.md`.
 fn host_os() -> &'static str {
     match std::env::consts::OS {
         "windows" => "windows",
         "macos" => "macos",
         _ => "linux",
     }
+}
+
+/// Which architecture this launcher is running on, in the suffix convention
+/// a code mod's `platform` list uses (e.g. `"x64"`, `"arm64"`).
+fn host_arch() -> &'static str {
+    match std::env::consts::ARCH {
+        "x86_64" => "x64",
+        "aarch64" => "arm64",
+        other => other,
+    }
+}
+
+/// The full platform id this launcher is running on (e.g. `"windows-x64"`,
+/// `"windows-arm64"`), matching the exact id a code mod's `platform` list
+/// entries use — see the `platform` section of `../rexglue-sdk/docs/mod-system.md`.
+fn host_platform() -> String {
+    format!("{}-{}", host_os(), host_arch())
 }
 
 /// One problem found by [`validate`]: `"error"` blocks launch, `"warning"` is
@@ -459,7 +474,7 @@ pub fn validate(game: &str, installed_game_version: &str) -> Validation {
 /// unit-testable without a games-folder fixture.
 fn validate_enabled(enabled: &[(String, Manifest)], installed_game_version: &str) -> Validation {
     let index_of = |id: &str| enabled.iter().position(|(mid, _)| mid == id);
-    let host = host_os();
+    let host = host_platform();
 
     let mut issues = Vec::new();
 
@@ -477,7 +492,7 @@ fn validate_enabled(enabled: &[(String, Manifest)], installed_game_version: &str
                 issues.push(err_issue(id, format!(
                     "\"{id}\" is a code mod but declares no platform binaries; it can't load. Update or remove it."
                 )));
-            } else if !m.platform.iter().any(|p| p.starts_with(host)) {
+            } else if !m.platform.iter().any(|p| *p == host) {
                 issues.push(err_issue(id, format!(
                     "\"{id}\" has no binary for this platform (ships: {}). Update, disable, or remove it.",
                     m.platform.join(", ")
@@ -1528,6 +1543,27 @@ mod tests {
     }
 
     #[test]
+    fn validate_enabled_flags_a_code_mod_with_only_the_wrong_arch_for_this_os() {
+        // Same OS, but the only binary shipped is for the other architecture.
+        let wrong_arch = if host_arch() == "x64" { "arm64" } else { "x64" };
+        let other_arch_platform = format!("{}-{}", host_os(), wrong_arch);
+        let enabled = vec![("some_mod".to_string(), manifest(Some("some_mod"), &[], &[], &[], &[&other_arch_platform]))];
+        let v = validate_enabled(&enabled, "");
+        assert!(!v.ok);
+        assert!(has_error(&v, "some_mod"));
+    }
+
+    #[test]
+    fn validate_enabled_passes_a_code_mod_shipping_both_arches_for_this_os() {
+        let wrong_arch = if host_arch() == "x64" { "arm64" } else { "x64" };
+        let other_arch_platform = format!("{}-{}", host_os(), wrong_arch);
+        let platform = host_platform();
+        let enabled = vec![("some_mod".to_string(), manifest(Some("some_mod"), &[], &[], &[], &[&platform, &other_arch_platform]))];
+        let v = validate_enabled(&enabled, "");
+        assert!(v.ok, "issues: {:?}", v.issues);
+    }
+
+    #[test]
     fn validate_enabled_passes_an_asset_only_mod_with_no_platform_declared() {
         // No `code` key at all -- platform is simply irrelevant, not an error.
         let enabled = vec![("badapple".to_string(), manifest(None, &[], &[], &[], &[]))];
@@ -1536,9 +1572,12 @@ mod tests {
     }
 
     fn host_os_platform() -> &'static str {
-        match host_os() {
-            "windows" => "windows-x64",
-            "macos" => "macos-x64",
+        match (host_os(), host_arch()) {
+            ("windows", "arm64") => "windows-arm64",
+            ("windows", _) => "windows-x64",
+            ("macos", "arm64") => "macos-arm64",
+            ("macos", _) => "macos-x64",
+            (_, "arm64") => "linux-arm64",
             _ => "linux-x64",
         }
     }
