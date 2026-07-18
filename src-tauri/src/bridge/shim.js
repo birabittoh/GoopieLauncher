@@ -148,10 +148,13 @@
   window.autoSortMods       = function (g)         { return call('autoSortMods', [g]); };
   // installModFromUrl is fire-and-forget like installModArchives — poll
   // isInstallingMods/getModInstallReport, and getDownloadProgress for the
-  // download percentage. fetchModMetadata is synchronous (single small
-  // metadata-only fetch, used at submission time).
-  window.installModFromUrl  = function (g, u, id)  { return call('installModFromUrl', [g, u, id]); };
+  // download percentage. `checksum`, when given, is the SHA-256 hex digest
+  // stamped on the catalog entry at approval time (see computeModChecksum) —
+  // the download is rejected if it doesn't match. fetchModMetadata and
+  // computeModChecksum are synchronous (single small fetch each).
+  window.installModFromUrl  = function (g, u, id, checksum) { return call('installModFromUrl', [g, u, id, checksum || '']); };
   window.fetchModMetadata   = function (u)         { return call('fetchModMetadata', [u]); };
+  window.computeModChecksum = function (u)         { return call('computeModChecksum', [u]); };
 
   // ── Global drag-and-drop (catalogue-wide matching) ───────────────────────────
   // `catalogue` is a JSON string (or array) of trimmed Game entries — see

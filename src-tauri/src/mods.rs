@@ -889,14 +889,21 @@ fn download_to_temp_zip(url: &str, progress: Option<&crate::download::ProgressCa
 /// afterward, same as [`install_archives`]. Returns a single-entry
 /// [`InstallReport`] so callers can reuse the same report shape/UI as a local
 /// zip install.
-pub fn install_from_url(game: &str, url: &str, desired_id: &str) -> InstallReport {
-    install_from_url_with_progress(game, url, desired_id, None)
+///
+/// `expected_checksum`, when set, is the SHA-256 hex digest the catalog
+/// recorded for this asset at approval time (see [`compute_url_checksum`]).
+/// The downloaded bytes are hashed and compared before extraction, so a
+/// release asset swapped out after approval (e.g. a compromised GitHub repo)
+/// is rejected instead of silently installed.
+pub fn install_from_url(game: &str, url: &str, desired_id: &str, expected_checksum: Option<&str>) -> InstallReport {
+    install_from_url_with_progress(game, url, desired_id, expected_checksum, None)
 }
 
 fn install_from_url_with_progress(
     game: &str,
     url: &str,
     desired_id: &str,
+    expected_checksum: Option<&str>,
     progress: Option<&crate::download::ProgressCallback>,
 ) -> InstallReport {
     let dir = mods_dir(game);
@@ -910,6 +917,28 @@ fn install_from_url_with_progress(
             };
         }
     };
+
+    if let Some(expected) = expected_checksum {
+        match crate::download::sha256_file(&zip_path.to_string_lossy()) {
+            Some(actual) if actual.eq_ignore_ascii_case(expected) => {}
+            Some(actual) => {
+                return InstallReport {
+                    results: vec![InstallResult {
+                        path: url.to_string(),
+                        ok: false,
+                        message: format!(
+                            "checksum mismatch: expected {expected}, got {actual} — the release asset may have changed since this mod was approved"
+                        ),
+                    }],
+                };
+            }
+            None => {
+                return InstallReport {
+                    results: vec![InstallResult { path: url.to_string(), ok: false, message: "failed to hash downloaded file".to_string() }],
+                };
+            }
+        }
+    }
 
     let result = match install_one_archive(&dir, &zip_path.to_string_lossy(), Some(desired_id)) {
         Ok(installed) => {
@@ -940,7 +969,7 @@ fn install_from_url_with_progress(
 /// `games::update` uses, polled via `getDownloadProgress`) while the zip
 /// downloads, since unlike a local sideload this involves a network transfer
 /// worth showing progress for.
-pub fn install_from_url_async(state: std::sync::Arc<crate::AppState>, game: String, url: String, desired_id: String) {
+pub fn install_from_url_async(state: std::sync::Arc<crate::AppState>, game: String, url: String, desired_id: String, expected_checksum: Option<String>) {
     state.mod_installing.store(true, std::sync::atomic::Ordering::Relaxed);
     state.download_progress.store(0, std::sync::atomic::Ordering::Relaxed);
 
@@ -949,11 +978,22 @@ pub fn install_from_url_async(state: std::sync::Arc<crate::AppState>, game: Stri
         state_cb.set_download_progress(dl, tot);
     });
 
-    let report = install_from_url_with_progress(&game, &url, &desired_id, Some(&progress_cb));
+    let report = install_from_url_with_progress(&game, &url, &desired_id, expected_checksum.as_deref(), Some(&progress_cb));
 
     state.finish_download();
     *state.mod_install_report.lock().unwrap() = Some(report);
     state.mod_installing.store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Downloads the asset at `url` fresh and returns its SHA-256 hex digest,
+/// without extracting or installing anything. Called at approve/accept-update
+/// time to stamp a catalog mod's `checksum` from the exact bytes an admin/dev
+/// reviewed, so [`install_from_url`] can later detect a release asset that
+/// was swapped out from under an already-approved mod.
+pub fn compute_url_checksum(url: &str) -> Result<String, String> {
+    let zip_path = download_to_temp_zip(url, None)?;
+    crate::download::sha256_file(&zip_path.to_string_lossy())
+        .ok_or_else(|| "failed to hash downloaded file".to_string())
 }
 
 /// Metadata read from a mod's `mod.toml`/`icon.png` without installing it —
@@ -971,6 +1011,10 @@ pub struct ModMetadata {
     pub requires: Vec<String>,
     /// `data:image/png;base64,...` icon, or empty if the archive has no `icon.png`.
     pub icon: String,
+    /// Minimum host application version this mod requires (e.g. `"1.2.0"`),
+    /// or empty if the manifest declares no `game_version`. See
+    /// [`parse_game_version_constraint`].
+    pub game_version: String,
 }
 
 /// Download the zip at `url` to a temp file, extract it to a temp dir, and
@@ -1016,6 +1060,7 @@ pub fn fetch_metadata(url: &str) -> Result<ModMetadata, String> {
         platform: manifest.platform,
         requires: manifest.requires.iter().map(format_requirement).collect(),
         icon,
+        game_version: parse_game_version_constraint(manifest.game_version.as_deref()).unwrap_or_default(),
     })
 }
 

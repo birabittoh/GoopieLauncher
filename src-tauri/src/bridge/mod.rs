@@ -726,8 +726,9 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
             let game = str_arg(&args, 0);
             let url = str_arg(&args, 1);
             let desired_id = str_arg(&args, 2);
+            let expected_checksum = args.get(3).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(str::to_string);
             let state_clone = Arc::clone(state);
-            std::thread::spawn(move || crate::mods::install_from_url_async(state_clone, game, url, desired_id));
+            std::thread::spawn(move || crate::mods::install_from_url_async(state_clone, game, url, desired_id, expected_checksum));
             Value::Null
         }
         "fetchModMetadata" => {
@@ -737,6 +738,15 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
             // pattern above.
             match crate::mods::fetch_metadata(&str_arg(&args, 0)) {
                 Ok(meta) => json!(meta),
+                Err(e) => json!({ "error": e }),
+            }
+        }
+        "computeModChecksum" => {
+            // Synchronous, same reasoning as `fetchModMetadata`: a single
+            // small download+hash, called at approve/accept-update time to
+            // stamp the catalog entry's `checksum` field.
+            match crate::mods::compute_url_checksum(&str_arg(&args, 0)) {
+                Ok(sum) => json!({ "checksum": sum }),
                 Err(e) => json!({ "error": e }),
             }
         }
