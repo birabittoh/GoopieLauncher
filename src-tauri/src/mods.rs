@@ -788,12 +788,18 @@ fn install_one_archive(mods_dir: &std::path::Path, zip_path: &str, desired_id: O
             .unwrap_or_else(|| "mod".to_string());
         (sanitize_mod_id(&stem), staging.path().to_path_buf())
     };
+    let manifest = read_manifest_at(&content_src.join(MANIFEST_NAME));
+
+    // The manifest's own `code` value, when set, is the author's stated id
+    // for the mod and takes precedence over whatever the zip/top-level-dir
+    // happened to be named — `dest` (named by `id` below) is what the
+    // extracted folder ends up renamed to regardless of its extracted name.
     let id = match desired_id {
         Some(d) => sanitize_mod_id(d),
-        None => derived_id,
+        None => manifest.code.as_deref().filter(|c| !c.is_empty()).map(sanitize_mod_id).unwrap_or(derived_id),
     };
 
-    let new_version = read_manifest_at(&content_src.join(MANIFEST_NAME)).version.unwrap_or_default();
+    let new_version = manifest.version.unwrap_or_default();
 
     let dest = mods_dir.join(&id);
     let updated = dest.exists();
@@ -1024,6 +1030,12 @@ pub struct ModMetadata {
     pub description: String,
     pub platform: Vec<String>,
     pub requires: Vec<String>,
+    /// The name that [`install_one_archive`] would give this mod's on-disk
+    /// folder: the zip's single top-level directory name, or (for a flat
+    /// archive with no such directory) the zip file's own name — used to
+    /// auto-fill a catalog submission's mod id so it matches what installing
+    /// the same asset would actually produce.
+    pub folder_name: String,
     /// `data:image/png;base64,...` icon, or empty if the archive has no `icon.png`.
     pub icon: String,
     /// Minimum host application version this mod requires (e.g. `"1.2.0"`),
@@ -1055,10 +1067,16 @@ pub fn fetch_metadata(url: &str) -> Result<ModMetadata, String> {
         .filter_map(|e| e.ok())
         .collect();
 
-    let content_root: PathBuf = if top_level.len() == 1 && top_level[0].file_type().map(|t| t.is_dir()).unwrap_or(false) {
-        top_level[0].path()
+    let (content_root, folder_name): (PathBuf, String) = if top_level.len() == 1 && top_level[0].file_type().map(|t| t.is_dir()).unwrap_or(false) {
+        (top_level[0].path(), top_level[0].file_name().to_string_lossy().to_string())
     } else {
-        extract_dir.path().to_path_buf()
+        let zip_stem = url
+            .rsplit('/')
+            .next()
+            .unwrap_or("mod")
+            .trim_end_matches(".zip")
+            .to_string();
+        (extract_dir.path().to_path_buf(), zip_stem)
     };
 
     let manifest = read_manifest_at(&content_root.join(MANIFEST_NAME));
@@ -1066,6 +1084,11 @@ pub fn fetch_metadata(url: &str) -> Result<ModMetadata, String> {
     let icon = std::fs::read(&icon_path)
         .map(|bytes| format!("data:image/png;base64,{}", B64.encode(bytes)))
         .unwrap_or_default();
+
+    // `code` (when set) is the author's own stated identifier for the mod
+    // and takes priority over the archive layout when suggesting an id; fall
+    // back to the folder/zip name for mods that don't set it.
+    let folder_name = manifest.code.clone().filter(|c| !c.is_empty()).unwrap_or(folder_name);
 
     Ok(ModMetadata {
         name: manifest.name.unwrap_or_default(),
@@ -1076,6 +1099,7 @@ pub fn fetch_metadata(url: &str) -> Result<ModMetadata, String> {
         requires: manifest.requires.iter().map(format_requirement).collect(),
         icon,
         game_version: parse_game_version_constraint(manifest.game_version.as_deref()).unwrap_or_default(),
+        folder_name,
     })
 }
 
