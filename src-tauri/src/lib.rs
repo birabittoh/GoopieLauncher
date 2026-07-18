@@ -63,13 +63,23 @@ pub(crate) fn url_override() -> Option<String> {
     None
 }
 
+/// Whether the launcher was invoked with `--offline`: forces offline mode for
+/// this run only (skips the `goopie.xyz` connectivity probe entirely). Unlike
+/// the persisted offline-mode preference, this is not written to config — it
+/// exists so the launcher can be started with a guaranteed-instant, no-network
+/// startup even when the site is down, without touching the user's saved
+/// preference.
+fn offline_flag_requested() -> bool {
+    std::env::args().skip(1).any(|a| a == "--offline")
+}
+
 /// Resolve the URL to load in the main window at startup.
 ///
 /// Priority:
 ///   1. `--url <URL>` / `--local` / `GOOPIE_URL` — dev overrides, bypass offline logic.
-///   2. The user's persisted offline-mode preference (`config::get_offline_mode_preference`):
-///      if they've explicitly enabled offline mode, honor it unconditionally — no probe,
-///      no requests to `goopie.xyz` at all, until they flip it back themselves.
+///   2. `--offline` CLI flag, or the user's persisted offline-mode preference
+///      (`config::get_offline_mode_preference`): honor it unconditionally — no probe,
+///      no requests to `goopie.xyz` at all.
 ///   3. Otherwise (the user prefers online): probe `https://goopie.xyz` on every launch
 ///      and fall back to the embedded offline bundle if it's unreachable. This fallback
 ///      is purely transient — it's never written back to the persisted preference, so
@@ -78,7 +88,9 @@ fn resolve_url() -> String {
     if let Some(url) = url_override() {
         return url;
     }
-    let offline = config::get_offline_mode_preference() || !offline_site::probe_connectivity();
+    let offline = offline_flag_requested()
+        || config::get_offline_mode_preference()
+        || !offline_site::probe_connectivity();
     if offline {
         offline_site::offline_site_url().to_string()
     } else {
