@@ -272,21 +272,39 @@ fn find_asset_url(api_body: &str) -> Option<String> {
     None
 }
 
+/// This host's CPU architecture in the release-asset naming convention
+/// (`_build.yml`'s `inputs.arch`: `"x86_64"` / `"aarch64"`), derived from
+/// `mods::host_arch()` (which reports the mod-manifest convention instead:
+/// `"x64"` / `"arm64"`) so there's a single source of truth for arch
+/// detection across the launcher.
+fn host_release_arch() -> &'static str {
+    match crate::mods::host_arch() {
+        "x64" => "x86_64",
+        "arm64" => "aarch64",
+        other => other,
+    }
+}
+
 #[cfg(windows)]
 fn is_target_asset(name: &str) -> bool {
-    // Our portable exe, e.g. "Goopie-Launcher-windows-x86_64.exe".
-    // Match is version-agnostic (release assets are versionless; CI ones embed a
-    // short SHA), so it still works after dropping the version from the filename.
+    // Our portable exe, e.g. "Goopie-Launcher-windows-x86_64.exe". Match is
+    // version-agnostic (release assets are versionless; CI ones embed a short
+    // SHA) and arch-specific (both x86_64 and aarch64 builds are published,
+    // so a plain "-windows-" substring would ambiguously match either).
     // Exclude the NSIS installer which ends with "-setup.exe".
-    name.contains("-windows-") && name.ends_with(".exe") && !name.ends_with("-setup.exe")
+    let platform_arch = format!("-windows-{}", host_release_arch());
+    name.contains(&platform_arch) && name.ends_with(".exe") && !name.ends_with("-setup.exe")
 }
 
 #[cfg(not(windows))]
 fn is_target_asset(name: &str) -> bool {
-    // Both a `.AppImage` and a plain portable binary are published for Linux;
-    // match whichever kind we're currently running as, so a portable install
-    // doesn't get swapped for an AppImage (or vice versa) on self-update.
-    if !name.contains("-linux-") {
+    // Both a `.AppImage` and a plain portable binary are published for Linux,
+    // for both x86_64 and aarch64 — match whichever kind and architecture
+    // we're currently running as, so a portable install doesn't get swapped
+    // for an AppImage (or vice versa), and one arch never grabs the other's
+    // binary (see the AArch64-on-x86_64 bug this guards against).
+    let platform_arch = format!("-linux-{}", host_release_arch());
+    if !name.contains(&platform_arch) {
         return false;
     }
     let is_appimage_asset = name.ends_with(".AppImage");
@@ -501,6 +519,35 @@ fn apply_update(staging: &std::path::Path, _new_version: &str) -> std::io::Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Regression test for the bug where `is_target_asset` ignored CPU
+    // architecture entirely: with both x86_64 and aarch64 Linux/Windows
+    // assets published, an x86_64 host could match and download the
+    // aarch64 asset (or vice versa) since both shared the "-linux-"/
+    // "-windows-" substring, then fail to exec it (ENOEXEC) after
+    // self-update replaced the binary — silently hanging the relaunch.
+    #[test]
+    fn is_target_asset_matches_only_host_architecture() {
+        let host = host_release_arch();
+        let other = if host == "x86_64" { "aarch64" } else { "x86_64" };
+
+        #[cfg(not(windows))]
+        {
+            let matching = format!("Goopie-Launcher-linux-{host}.AppImage");
+            let mismatched = format!("Goopie-Launcher-linux-{other}.AppImage");
+            assert_eq!(is_target_asset(&matching), running_as_appimage());
+            assert!(!is_target_asset(&mismatched));
+        }
+
+        #[cfg(windows)]
+        {
+            let matching = format!("Goopie-Launcher-windows-{host}.exe");
+            let mismatched = format!("Goopie-Launcher-windows-{other}.exe");
+            assert!(is_target_asset(&matching));
+            assert!(!is_target_asset(&mismatched));
+            assert!(!is_target_asset(&format!("Goopie-Launcher-windows-{host}-setup.exe")));
+        }
+    }
 
     #[test]
     fn auto_apply_requires_flag_update_and_no_running_game() {

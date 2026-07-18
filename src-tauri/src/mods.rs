@@ -403,7 +403,7 @@ fn host_os() -> &'static str {
 
 /// Which architecture this launcher is running on, in the suffix convention
 /// a code mod's `platform` list uses (e.g. `"x64"`, `"arm64"`).
-fn host_arch() -> &'static str {
+pub(crate) fn host_arch() -> &'static str {
     match std::env::consts::ARCH {
         "x86_64" => "x64",
         "aarch64" => "arm64",
