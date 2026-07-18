@@ -1,6 +1,6 @@
 {
   "name": "goopie-launcher",
-  "version": "1.6.3",
+  "version": "1.7.0",
   "scripts": {
     "dev": "node scripts/dev.js",
     "dev:web": "npm run dev --prefix GoopieWebsite",
