@@ -198,6 +198,8 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 show_main_window(&window);
+                let state = app.state::<AppState>();
+                discord::set_window_visible(state.inner(), true);
             }
         }))
         .manage(state)
@@ -240,8 +242,16 @@ pub fn run() {
                 .menu(&tray_menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "library" => navigate_and_show(app, "#/library"),
-                    "settings" => navigate_and_show(app, "#/settings"),
+                    "library" => {
+                        navigate_and_show(app, "#/library");
+                        let state = app.state::<AppState>();
+                        discord::set_window_visible(state.inner(), true);
+                    }
+                    "settings" => {
+                        navigate_and_show(app, "#/settings");
+                        let state = app.state::<AppState>();
+                        discord::set_window_visible(state.inner(), true);
+                    }
                     "quit" => app.exit(0),
                     _ => {}
                 })
@@ -249,6 +259,8 @@ pub fn run() {
                     if let TrayIconEvent::Click { button: tauri::tray::MouseButton::Left, button_state: tauri::tray::MouseButtonState::Up, .. } = event {
                         if let Some(window) = tray.app_handle().get_webview_window("main") {
                             show_main_window(&window);
+                            let state = tray.app_handle().state::<AppState>();
+                            discord::set_window_visible(state.inner(), true);
                         }
                     }
                 })
@@ -338,6 +350,8 @@ pub fn run() {
                     if config::get_collapse_to_tray() {
                         api.prevent_close();
                         let _ = window.hide();
+                        let state = window.app_handle().state::<AppState>();
+                        discord::set_window_visible(state.inner(), false);
                     }
                 }
                 _ => {}

@@ -283,6 +283,7 @@ fn launch_and_track(state: &Arc<AppState>, game: String, build: String, cvar_arg
         if let Some(window) = state.window.lock().unwrap().as_ref() {
             let _ = window.hide();
         }
+        discord::set_window_visible(state, false);
     }
 
     let state_clone = Arc::clone(state);
@@ -327,6 +328,7 @@ fn monitor_running_game(state: Arc<AppState>, session_id: u64) {
                     if let Some(window) = state.window.lock().unwrap().as_ref() {
                         crate::show_main_window(window);
                     }
+                    discord::set_window_visible(&state, true);
                 }
                 return;
             }

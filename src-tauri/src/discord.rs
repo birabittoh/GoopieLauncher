@@ -80,6 +80,9 @@ pub struct DiscordManager {
     /// misconfiguration, unlike "Discord isn't running", which is normal and
     /// stays silent.
     warned_missing_client_id: bool,
+    /// Whether the main window is currently visible (not collapsed to tray).
+    /// When false and no game is running, browsing presence is suppressed.
+    window_visible: bool,
 }
 
 impl DiscordManager {
@@ -90,6 +93,7 @@ impl DiscordManager {
             enabled,
             last_applied: None,
             warned_missing_client_id: false,
+            window_visible: true,
         }
     }
 
@@ -132,6 +136,23 @@ impl DiscordManager {
         if !self.ensure_connected() {
             return;
         }
+
+        // When the window is collapsed to the tray, suppress browsing presence
+        // but keep playing/hidden states — a running game owns its own presence.
+        let should_push = match &self.desired {
+            Presence::Browsing => self.window_visible,
+            _ => true,
+        };
+        if !should_push {
+            if self.last_applied.is_some() {
+                if let Some(client) = self.client.as_mut() {
+                    let _ = client.clear_activity();
+                }
+                self.last_applied = None;
+            }
+            return;
+        }
+
         if self.last_applied.as_ref() == Some(&self.desired) {
             return;
         }
@@ -231,6 +252,14 @@ pub fn set_enabled(state: &Arc<AppState>, enabled: bool) {
     } else {
         mgr.disable();
     }
+}
+
+/// Update window visibility and re-evaluate presence — called when the window
+/// is hidden to (or restored from) the system tray.
+pub fn set_window_visible(state: &AppState, visible: bool) {
+    let mut mgr = state.discord.lock().unwrap();
+    mgr.window_visible = visible;
+    mgr.apply();
 }
 
 /// Current Unix-epoch seconds, for stamping a `Playing` presence's start time.
