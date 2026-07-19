@@ -550,16 +550,14 @@ fn validate_enabled(enabled: &[(String, Manifest)], installed_game_version: &str
                     display_version(&min_version)
                 )));
             } else {
-                match cmp_versions(installed_game_version, &min_version) {
-                    std::cmp::Ordering::Less => issues.push(err_issue(id, format!(
+                // `game_version` is a *minimum* constraint: a newer installed
+                // game satisfies it just fine, so only flag when the installed
+                // game is older than what the mod targets.
+                if cmp_versions(installed_game_version, &min_version) == std::cmp::Ordering::Less {
+                    issues.push(err_issue(id, format!(
                         "\"{id}\" requires game {} or newer; the installed game is {}. Update the game, or disable this mod.",
                         display_version(&min_version), display_version(installed_game_version)
-                    ))),
-                    std::cmp::Ordering::Greater => issues.push(warn_issue(id, format!(
-                        "\"{id}\" targets game {}; the installed game is {}, which may not be fully compatible.",
-                        display_version(&min_version), display_version(installed_game_version)
-                    ))),
-                    std::cmp::Ordering::Equal => {}
+                    )));
                 }
             }
         }
@@ -1463,11 +1461,13 @@ mod tests {
     }
 
     #[test]
-    fn validate_enabled_warns_when_installed_game_is_newer_than_game_version() {
+    fn validate_enabled_passes_when_installed_game_is_newer_than_game_version() {
+        // `game_version` is a *minimum*: a mod targeting 1.0.0 is compatible
+        // with 1.2.0, 2.0.0, etc., so no issue should be raised at all.
         let enabled = vec![("mod_a".to_string(), manifest_versioned(None, &[], &[], &[], &[], None, Some("1.0.0")))];
         let v = validate_enabled(&enabled, "1.2.0");
         assert!(v.ok, "a newer game than a mod targets must never block launch");
-        assert!(has_warning(&v, "mod_a"));
+        assert!(v.issues.is_empty(), "a newer game than a mod targets must not even warn");
     }
 
     #[test]
