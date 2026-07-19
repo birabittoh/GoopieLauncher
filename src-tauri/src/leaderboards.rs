@@ -91,7 +91,10 @@ pub fn get_leaderboards(game: &str, title_ids: Vec<String>) -> Vec<LeaderboardBo
     for title_id in title_ids {
         // Filenames come straight from a directory listing on our side, but
         // guard against path traversal in case a caller passes one through directly.
-        if title_id.is_empty() || !title_id.chars().all(|c| c.is_ascii_hexdigit()) {
+        // Store files are normally named after their hex title id, but users can
+        // rename/duplicate a file (e.g. to keep an old store around under a new
+        // name) so any filesystem-safe stem is accepted here.
+        if title_id.is_empty() || !title_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
             continue;
         }
         let path = dir.join(format!("{}.toml", title_id));
@@ -146,6 +149,104 @@ pub fn get_leaderboards(game: &str, title_ids: Vec<String>) -> Vec<LeaderboardBo
     }
 
     out
+}
+
+fn valid_store_filename(id: &str) -> bool {
+    !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// Merge several leaderboard store files into one, concatenating rows for
+/// matching `view_id`s. Every file being merged is first copied aside as a
+/// timestamped backup (so the user can always recover the pre-merge state by
+/// renaming a backup back), then all source files except the target are
+/// deleted and the target is overwritten with the merged content.
+///
+/// The merge target is the file whose name is an unmodified 8-hex-digit
+/// title id (the store the game itself writes to) if one is present among
+/// `title_ids`; otherwise the first name, sorted.
+///
+/// Returns the merged file's title id (its filename minus `.toml`) on success.
+pub fn merge_leaderboard_files(game: &str, mut title_ids: Vec<String>) -> Result<String, String> {
+    let dir = leaderboards_dir(game).ok_or("Could not determine the leaderboards folder")?;
+
+    title_ids.retain(|id| valid_store_filename(id));
+    title_ids.sort();
+    title_ids.dedup();
+    if title_ids.len() < 2 {
+        return Err("Select at least two leaderboard files to merge".to_string());
+    }
+
+    let target_id = title_ids
+        .iter()
+        .find(|id| id.len() == 8 && id.chars().all(|c| c.is_ascii_hexdigit()))
+        .cloned()
+        .unwrap_or_else(|| title_ids[0].clone());
+
+    // Merge boards by view_id, concatenating each view's `rows` array as raw
+    // toml::Value so row/column contents round-trip byte-for-byte.
+    let mut merged: Vec<(i64, toml::value::Table)> = Vec::new();
+    for title_id in &title_ids {
+        let path = dir.join(format!("{}.toml", title_id));
+        let content = fs::read_to_string(&path)
+            .map_err(|e| format!("Could not read {}.toml: {}", title_id, e))?;
+        let value: toml::Value = content
+            .parse()
+            .map_err(|e| format!("Could not parse {}.toml: {}", title_id, e))?;
+        let Some(toml::Value::Array(boards)) = value.get("boards").cloned() else { continue };
+
+        for b in boards {
+            let toml::Value::Table(board) = b else { continue };
+            let view_id = board.get("view_id").and_then(|v| v.as_integer()).unwrap_or(0);
+            let rows = board.get("rows").cloned().unwrap_or(toml::Value::Array(vec![]));
+            let toml::Value::Array(rows) = rows else { continue };
+
+            match merged.iter_mut().find(|(v, _)| *v == view_id) {
+                Some((_, existing)) => {
+                    if let Some(toml::Value::Array(existing_rows)) = existing.get_mut("rows") {
+                        existing_rows.extend(rows);
+                    }
+                }
+                None => {
+                    let mut table = board.clone();
+                    table.insert("rows".to_string(), toml::Value::Array(rows));
+                    merged.push((view_id, table));
+                }
+            }
+        }
+    }
+
+    let merged_value = toml::Value::Table({
+        let mut root = toml::value::Table::new();
+        root.insert(
+            "boards".to_string(),
+            toml::Value::Array(merged.into_iter().map(|(_, t)| toml::Value::Table(t)).collect()),
+        );
+        root
+    });
+    let merged_content = toml::to_string_pretty(&merged_value)
+        .map_err(|e| format!("Could not serialize merged leaderboards: {}", e))?;
+
+    // Back up every source file before touching anything on disk.
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    for title_id in &title_ids {
+        let src = dir.join(format!("{}.toml", title_id));
+        let backup = dir.join(format!("{}.backup-{}.toml", title_id, timestamp));
+        fs::copy(&src, &backup).map_err(|e| format!("Could not back up {}.toml: {}", title_id, e))?;
+    }
+
+    // Only now overwrite the target and remove the other merged-in files.
+    fs::write(dir.join(format!("{}.toml", target_id)), merged_content)
+        .map_err(|e| format!("Could not write merged {}.toml: {}", target_id, e))?;
+    for title_id in &title_ids {
+        if title_id != &target_id {
+            let _ = fs::remove_file(dir.join(format!("{}.toml", title_id)));
+        }
+    }
+
+    Ok(target_id)
 }
 
 #[cfg(test)]
