@@ -58,11 +58,16 @@ def launcher_binary() -> Path:
 
 
 def asset_name() -> str:
-    # Must satisfy launcher::is_target_asset for this platform (version-agnostic).
+    # Must satisfy launcher::is_target_asset for this platform+arch
+    # (version-agnostic) — launcher.rs:306 matches on host_release_arch(),
+    # so a hardcoded x86_64 name is silently rejected on aarch64 runners.
+    import platform as _platform
+
+    arch = "aarch64" if _platform.machine().lower() in ("arm64", "aarch64") else "x86_64"
     return (
-        "Goopie-Launcher-windows-x86_64.exe"
+        f"Goopie-Launcher-windows-{arch}.exe"
         if IS_WINDOWS
-        else "Goopie-Launcher-linux-x86_64.AppImage"
+        else f"Goopie-Launcher-linux-{arch}.AppImage"
     )
 
 
