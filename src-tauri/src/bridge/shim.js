@@ -106,7 +106,7 @@
   // declared type (Int/Float/Bool/Enum), so the launcher can write it into
   // the game's TOML config with the correct TOML type instead of guessing
   // from the formatted value string. Older launchers simply ignore it.
-  window.Play            = function (g, b, c, e, r, m, t) { return call('Play', [g, b, c, e, r, m, t]); };
+  window.Play            = function (g, b, c, e, r, m, t, lb) { return call('Play', [g, b, c, e, r, m, t, lb]); };
   // Running-game tracking: poll to drive the Play/Close button and the
   // "close the running game to start this one?" confirmation prompt.
   window.isGameRunning   = function ()    { return call('isGameRunning', []); };

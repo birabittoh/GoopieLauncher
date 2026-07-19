@@ -94,7 +94,7 @@ pub fn get_leaderboards(game: &str, title_ids: Vec<String>) -> Vec<LeaderboardBo
         // Store files are normally named after their hex title id, but users can
         // rename/duplicate a file (e.g. to keep an old store around under a new
         // name) so any filesystem-safe stem is accepted here.
-        if title_id.is_empty() || !title_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        if !valid_store_filename(&title_id) {
             continue;
         }
         let path = dir.join(format!("{}.toml", title_id));
@@ -155,31 +155,151 @@ fn valid_store_filename(id: &str) -> bool {
     !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
-/// Merge several leaderboard store files into one, concatenating rows for
-/// matching `view_id`s. Every file being merged is first copied aside as a
-/// timestamped backup (so the user can always recover the pre-merge state by
-/// renaming a backup back), then all source files except the target are
-/// deleted and the target is overwritten with the merged content.
+/// Merges every leaderboard store file present for `game` into one, so the
+/// game sees a single combined leaderboard for the duration of this play
+/// session. Every file being merged is first copied aside as a timestamped
+/// backup, then all source files except the target are deleted and the
+/// target is overwritten with the merged content. Call
+/// [`restore_after_exit`] with the same `game` once the session ends to
+/// bring the non-target files back.
 ///
-/// The merge target is the file whose name is an unmodified 8-hex-digit
-/// title id (the store the game itself writes to) if one is present among
-/// `title_ids`; otherwise the first name, sorted.
+/// `title_id_hint` is the title id configured in Edit Game, if any — the
+/// actual filename the game writes to is trusted over any file that merely
+/// *looks* like a hex title id, since a user can copy/rename a file to an
+/// identical-looking name.
 ///
-/// Returns the merged file's title id (its filename minus `.toml`) on success.
-pub fn merge_leaderboard_files(game: &str, mut title_ids: Vec<String>) -> Result<String, String> {
+/// A no-op (nothing to merge) when fewer than two store files exist.
+pub fn merge_all_for_launch(game: &str, title_id_hint: Option<&str>) {
+    let title_ids = list_leaderboard_files(game);
+    if title_ids.len() < 2 {
+        return;
+    }
+    if let Err(e) = merge_leaderboard_files(game, title_ids, title_id_hint) {
+        eprintln!("[leaderboards] merge-on-launch failed for {}: {}", game, e);
+    }
+}
+
+/// Undoes [`merge_all_for_launch`]: every non-target file removed by the
+/// merge is restored from its backup, and the exact rows that merge injected
+/// into the target (per view_id, read straight out of the backups) are
+/// subtracted back out of it — rather than overwriting the target wholesale,
+/// which would also discard any new rows the game wrote to it this session.
+/// Without this subtraction, re-merging on the next launch would re-inject
+/// the same imported rows and duplicate them forever. All backups are
+/// cleaned up afterward.
+pub fn restore_after_exit(game: &str) {
+    let Some(dir) = leaderboards_dir(game) else { return };
+    let Ok(entries) = fs::read_dir(&dir) else { return };
+
+    // Group backups by their original title id, keeping only the newest
+    // (highest timestamp) copy of each in case stale backups ever linger.
+    let mut latest_backup: std::collections::HashMap<String, (u64, PathBuf)> = std::collections::HashMap::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+        let Some((id, ts_str)) = name.split_once(".toml.backup-") else { continue };
+        let Ok(ts) = ts_str.parse::<u64>() else { continue };
+        if !valid_store_filename(id) {
+            continue;
+        }
+        match latest_backup.get(id) {
+            Some((existing_ts, _)) if *existing_ts >= ts => {
+                let _ = fs::remove_file(&path);
+            }
+            _ => {
+                if let Some((_, stale)) = latest_backup.insert(id.to_string(), (ts, path.clone())) {
+                    let _ = fs::remove_file(stale);
+                }
+            }
+        }
+    }
+    if latest_backup.is_empty() {
+        return;
+    }
+
+    let live_ids: Vec<&String> = latest_backup.keys()
+        .filter(|id| dir.join(format!("{}.toml", id)).exists())
+        .collect();
+
+    if let [target_id] = live_ids.as_slice() {
+        // Every row each *non-target* backup held, grouped by view_id — this
+        // is exactly what the merge injected into the target from that file,
+        // and what must come back out of it below. The target's own backup
+        // must not contribute here: those are the target's original rows,
+        // not something merge added to it.
+        let mut injected_by_view: std::collections::HashMap<i64, Vec<toml::Value>> = std::collections::HashMap::new();
+        for (id, (_, path)) in &latest_backup {
+            if id == *target_id {
+                continue;
+            }
+            let Ok(content) = fs::read_to_string(path) else { continue };
+            let Ok(value) = content.parse::<toml::Value>() else { continue };
+            let Some(toml::Value::Array(boards)) = value.get("boards").cloned() else { continue };
+            for b in boards {
+                let toml::Value::Table(board) = b else { continue };
+                let view_id = board.get("view_id").and_then(|v| v.as_integer()).unwrap_or(0);
+                if let Some(toml::Value::Array(rows)) = board.get("rows") {
+                    injected_by_view.entry(view_id).or_default().extend(rows.clone());
+                }
+            }
+        }
+
+        let target_path = dir.join(format!("{}.toml", target_id));
+        if let Ok(content) = fs::read_to_string(&target_path) {
+            if let Ok(toml::Value::Table(mut root)) = content.parse::<toml::Value>() {
+                if let Some(toml::Value::Array(boards)) = root.get_mut("boards") {
+                    for b in boards.iter_mut() {
+                        let toml::Value::Table(board) = b else { continue };
+                        let view_id = board.get("view_id").and_then(|v| v.as_integer()).unwrap_or(0);
+                        let Some(to_remove) = injected_by_view.get(&view_id) else { continue };
+                        let Some(toml::Value::Array(rows)) = board.get_mut("rows") else { continue };
+                        for row in to_remove {
+                            if let Some(pos) = rows.iter().position(|r| r == row) {
+                                rows.remove(pos);
+                            }
+                        }
+                    }
+                }
+                if let Ok(new_content) = toml::to_string_pretty(&toml::Value::Table(root)) {
+                    let _ = fs::write(&target_path, new_content);
+                }
+            }
+        }
+    }
+
+    for (id, (_, backup_path)) in latest_backup {
+        let live_path = dir.join(format!("{}.toml", id));
+        if live_path.exists() {
+            let _ = fs::remove_file(&backup_path);
+        } else {
+            let _ = fs::rename(&backup_path, &live_path);
+        }
+    }
+}
+
+fn merge_leaderboard_files(game: &str, mut title_ids: Vec<String>, target_hint: Option<&str>) -> Result<String, String> {
     let dir = leaderboards_dir(game).ok_or("Could not determine the leaderboards folder")?;
 
     title_ids.retain(|id| valid_store_filename(id));
     title_ids.sort();
     title_ids.dedup();
     if title_ids.len() < 2 {
-        return Err("Select at least two leaderboard files to merge".to_string());
+        return Err("Need at least two leaderboard files to merge".to_string());
     }
 
-    let target_id = title_ids
-        .iter()
-        .find(|id| id.len() == 8 && id.chars().all(|c| c.is_ascii_hexdigit()))
+    // Prefer the configured title id (the file the game actually writes to)
+    // over guessing from filenames — several files can look like a valid hex
+    // title id if one was copied/renamed to imitate another.
+    let target_id = target_hint
+        .filter(|hint| valid_store_filename(hint))
+        .and_then(|hint| title_ids.iter().find(|id| id.eq_ignore_ascii_case(hint)))
         .cloned()
+        .or_else(|| {
+            title_ids
+                .iter()
+                .find(|id| id.len() == 8 && id.chars().all(|c| c.is_ascii_hexdigit()))
+                .cloned()
+        })
         .unwrap_or_else(|| title_ids[0].clone());
 
     // Merge boards by view_id, concatenating each view's `rows` array as raw
@@ -223,17 +343,28 @@ pub fn merge_leaderboard_files(game: &str, mut title_ids: Vec<String>) -> Result
         );
         root
     });
-    let merged_content = toml::to_string_pretty(&merged_value)
-        .map_err(|e| format!("Could not serialize merged leaderboards: {}", e))?;
-
-    // Back up every source file before touching anything on disk.
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
+    let merged_content = format!(
+        "# Merged by GoopieLauncher for this play session (unix {}) from: {}.\n\
+         # The pre-merge files were backed up alongside this one and are restored\n\
+         # automatically when the game closes — do not edit this comment by hand.\n{}",
+        timestamp,
+        title_ids.join(", "),
+        toml::to_string_pretty(&merged_value)
+            .map_err(|e| format!("Could not serialize merged leaderboards: {}", e))?
+    );
+
+    // Back up every source file before touching anything on disk.
     for title_id in &title_ids {
         let src = dir.join(format!("{}.toml", title_id));
-        let backup = dir.join(format!("{}.backup-{}.toml", title_id, timestamp));
+        // Deliberately not a `.toml` file: `list_leaderboard_files` (and thus
+        // the ReXGlue runtime's own store lookup) only picks up `.toml`
+        // files, so a backup with that extension would otherwise show up as
+        // a selectable leaderboard file — or even get read as live game data.
+        let backup = dir.join(format!("{}.toml.backup-{}", title_id, timestamp));
         fs::copy(&src, &backup).map_err(|e| format!("Could not back up {}.toml: {}", title_id, e))?;
     }
 

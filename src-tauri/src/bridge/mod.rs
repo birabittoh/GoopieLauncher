@@ -219,7 +219,7 @@ impl AppState {
 /// Spawn `game`/`build` and start tracking it as the running game, replacing
 /// (and killing) any previously-running game first — mirrors the "closing the
 /// running game loses unsaved progress" behaviour the frontend warns about.
-fn launch_and_track(state: &Arc<AppState>, game: String, build: String, cvar_args: String, custom_exe: String, set_data_root: bool, mount_update: bool, cvar_types: String) {
+fn launch_and_track(state: &Arc<AppState>, game: String, build: String, cvar_args: String, custom_exe: String, set_data_root: bool, mount_update: bool, cvar_types: String, title_id: String) {
     kill_running_game(state);
     *state.last_launch_error.lock().unwrap() = None;
 
@@ -243,9 +243,19 @@ fn launch_and_track(state: &Arc<AppState>, game: String, build: String, cvar_arg
         return;
     }
 
+    // Combine any extra leaderboard store files (e.g. one kept from an older
+    // title id) into the one the game actually writes to, so it sees the
+    // full leaderboard for this session. Undone in `restore_after_exit` once
+    // the game closes.
+    let title_id = if title_id.is_empty() { None } else { Some(title_id.as_str()) };
+    leaderboards::merge_all_for_launch(&game, title_id);
+
     let child = match games::play(&game, &build, &cvar_args, &custom_exe, set_data_root, mount_update, &cvar_types) {
         Ok(child) => child,
         Err(msg) => {
+            // Launch never actually started — undo the merge immediately
+            // instead of leaving it stuck until some future successful launch.
+            leaderboards::restore_after_exit(&game);
             *state.last_launch_error.lock().unwrap() = Some(msg);
             return;
         }
@@ -298,6 +308,7 @@ fn monitor_running_game(state: Arc<AppState>, session_id: u64) {
                 let game = running.game.clone();
                 *lock = None;
                 drop(lock);
+                leaderboards::restore_after_exit(&game);
                 // Push the save to Drive if cloud saves are enabled for this
                 // game and it changed — no-ops instantly otherwise (see
                 // `cloud_saves::sync_after_game_exit`). Spawned so a slow/failed
@@ -336,6 +347,7 @@ fn kill_running_game(state: &Arc<AppState>) -> bool {
     let mut lock = state.running_game.lock().unwrap();
     let Some(mut running) = lock.take() else { return false };
     playtime::record_session(&running.game, running.started_at.elapsed().as_secs());
+    leaderboards::restore_after_exit(&running.game);
     // Same Drive push as the natural-exit path in `monitor_running_game` —
     // this fn also runs for an explicit "Close" and for swapping to a
     // different game, both of which end the session just as much as the
@@ -812,9 +824,13 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
             // for a missing index, and `games::play` falls back to inferring
             // each value's TOML type from its formatted string.
             let cvar_types = str_arg(&args, 6);
+            // Optional (8th): the game's title id, configured in Edit Game.
+            // Used to pick the real "Live" leaderboard store file out of any
+            // same-looking decoys before merging. Empty when unset/absent.
+            let title_id = str_arg(&args, 7);
             let state_clone = Arc::clone(state);
             std::thread::spawn(move || {
-                launch_and_track(&state_clone, game, build, cvar_args, custom_exe, set_data_root, mount_update, cvar_types);
+                launch_and_track(&state_clone, game, build, cvar_args, custom_exe, set_data_root, mount_update, cvar_types, title_id);
             });
             Value::Null
         }
@@ -1080,7 +1096,17 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
         "listAchievementFiles" => json!(achievements::list_achievement_files(&str_arg(&args, 0))),
 
         // ── Leaderboards ───────────────────────────────────────────────────────
-        "listLeaderboardFiles" => json!(leaderboards::list_leaderboard_files(&str_arg(&args, 0))),
+        // If nothing is running, any merge from a previous session should
+        // already have been restored on exit — but restore defensively here
+        // too (e.g. the launcher was killed mid-session) before the Manage
+        // tab reads the files, so it never shows a stuck merged-only view.
+        "listLeaderboardFiles" => {
+            let game = str_arg(&args, 0);
+            if state.running_game.lock().unwrap().is_none() {
+                leaderboards::restore_after_exit(&game);
+            }
+            json!(leaderboards::list_leaderboard_files(&game))
+        }
         "getLeaderboards" => {
             let title_ids: Vec<String> = json_arg(&args, 1);
             json!(leaderboards::get_leaderboards(&str_arg(&args, 0), title_ids))
