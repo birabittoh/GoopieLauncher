@@ -168,6 +168,10 @@ jobs:
         shell: bash
         run: |
           set -eux
+          # Multiarch lib dir differs per runner (x86_64-linux-gnu on
+          # ubuntu-24.04, aarch64-linux-gnu on ubuntu-24.04-arm) — resolve it
+          # instead of hardcoding, so the host-lib lookups below work on both.
+          MULTIARCH="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"
           APPIMAGE="$(ls src-tauri/target/release/bundle/appimage/*.AppImage | head -1)"
           ORIG_DIR="$(cd "$(dirname "$APPIMAGE")" && pwd)"
           ORIG_NAME="$(basename "$APPIMAGE")"
@@ -226,7 +230,7 @@ jobs:
             while read -r MISSING_LIB; do
               [ -n "$MISSING_LIB" ] || continue
               [ -e "$LIBDIR/$MISSING_LIB" ] && continue
-              HOST_PATH="$(find /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu -name "$MISSING_LIB" 2>/dev/null | head -1)"
+              HOST_PATH="$(find "/usr/lib/$MULTIARCH" "/lib/$MULTIARCH" -name "$MISSING_LIB" 2>/dev/null | head -1)"
               if [ -z "$HOST_PATH" ]; then
                 echo "::error::Could not find $MISSING_LIB on the host to inject into the AppImage"
                 exit 1
@@ -234,6 +238,22 @@ jobs:
               cp -L "$HOST_PATH" "$LIBDIR/$MISSING_LIB"
             done < <(ldd "$BIN" | awk '/not found/ {print $1}')
           done
+
+          # libappindicator-sys loads its library via dlopen(), not a regular
+          # ELF dependency, so it never shows up as "not found" in the ldd
+          # scan above and the main binary's own transitive deps (already
+          # bundled by quick-sharun) never pull it in either. Inject it by
+          # hand, trying both the Ayatana and legacy sonames since
+          # libappindicator-sys falls back between them at runtime.
+          for LIB in libayatana-appindicator3.so.1 libappindicator3.so.1; do
+            [ -e "$LIBDIR/$LIB" ] && continue
+            HOST_PATH="$(find "/usr/lib/$MULTIARCH" "/lib/$MULTIARCH" -name "$LIB" 2>/dev/null | head -1)"
+            [ -n "$HOST_PATH" ] && cp -L "$HOST_PATH" "$LIBDIR/$LIB"
+          done
+          if [ ! -e "$LIBDIR/libayatana-appindicator3.so.1" ] && [ ! -e "$LIBDIR/libappindicator3.so.1" ]; then
+            echo "::error::Could not find libayatana-appindicator3.so.1 or libappindicator3.so.1 on the host to inject into the AppImage"
+            exit 1
+          fi
 
           # Fixed token (namespaced to avoid clashing with quick-sharun's own
           # hook tokens) that a launch-time hook resolves to $APPDIR/lib, so
