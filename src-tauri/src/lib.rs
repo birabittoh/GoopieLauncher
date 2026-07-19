@@ -123,6 +123,14 @@ fn auto_play_game() -> Option<String> {
 /// the tray, whether it was hidden (`CloseRequested` collapse) or just
 /// minimized by the OS.
 pub(crate) fn show_main_window(window: &tauri::WebviewWindow) {
+    // If the window was last positioned on a monitor that's no longer
+    // connected (e.g. undocked from an external display while collapsed to
+    // tray), `current_monitor` returns `None` — the window is technically
+    // "shown" but sits at off-screen coordinates with nothing to render it.
+    // Re-center it in that case so it reappears on the primary display.
+    if let Ok(None) = window.current_monitor() {
+        let _ = window.center();
+    }
     let _ = window.show();
     let _ = window.unminimize();
     let _ = window.set_focus();
