@@ -134,6 +134,19 @@ fn check_for_update(state: &Arc<AppState>) {
     maybe_auto_apply(state);
 }
 
+/// Force an immediate launcher-update check, off the periodic monitor's
+/// schedule — backs the `RecheckLauncherUpdate` bridge command so the user can
+/// check on demand instead of waiting up to an interval for the next automatic
+/// check. Toggles `update_checking` around the (blocking) request so the
+/// frontend can show a spinner and wait for the fresh verdict, and reuses
+/// `check_for_update`, so it refreshes exactly the same cache the monitor does
+/// (including re-stamping the throttle timestamp on success).
+pub fn recheck_now(state: Arc<AppState>) {
+    state.update_checking.store(true, Ordering::Relaxed);
+    check_for_update(&state);
+    state.update_checking.store(false, Ordering::Relaxed);
+}
+
 /// The gating decision for an unattended auto-apply, factored out so it can be
 /// unit-tested without touching the registry/INI or the network. An update is
 /// applied on its own only when **all three** hold:

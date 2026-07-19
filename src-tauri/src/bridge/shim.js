@@ -48,6 +48,12 @@
   // below — kept separate from getDownloadProgress/-String, which track a
   // game's own download, so the two never light up each other's UI).
   window.CheckForLauncherUpdate = function ()  { return call('CheckForLauncherUpdate', []); };
+  // `RecheckLauncherUpdate` (1.7.2+) forces an immediate, off-schedule update
+  // check on a background thread (the check hits the GitHub API). It's
+  // fire-and-forget: poll `isCheckingLauncherUpdate` until it returns false,
+  // then read the refreshed `CheckForLauncherUpdate` cache for the verdict.
+  window.RecheckLauncherUpdate    = function ()  { return call('RecheckLauncherUpdate', []); };
+  window.isCheckingLauncherUpdate = function ()  { return call('isCheckingLauncherUpdate', []); };
   window.SelfUpdateLauncher     = function ()  { return call('SelfUpdateLauncher', []); };
   window.isLauncherUpdating              = function ()  { return call('isLauncherUpdating', []); };
   window.getLauncherUpdateProgress       = function ()  { return call('getLauncherUpdateProgress', []); };

@@ -112,6 +112,11 @@ pub struct AppState {
     /// Whether the update monitor has completed at least one check, so the
     /// website can tell "checked, no update" apart from "hasn't checked yet".
     pub update_checked: AtomicBool,
+    /// Whether an on-demand launcher-update check (triggered by the
+    /// `RecheckLauncherUpdate` bridge command) is currently in flight. Lets the
+    /// website show a spinner and wait for the fresh verdict, since the check
+    /// itself blocks on a GitHub API request and so runs on a background thread.
+    pub update_checking: AtomicBool,
     /// Human-readable error from the most recent `Play` attempt, if it failed
     /// to launch (e.g. executable not found — likely an incompatible-platform
     /// build — or a spawn error). `None` once successfully launched or after
@@ -166,6 +171,7 @@ impl AppState {
             update_available: AtomicBool::new(false),
             latest_version: Mutex::new(String::new()),
             update_checked: AtomicBool::new(false),
+            update_checking: AtomicBool::new(false),
             last_launch_error: Mutex::new(None),
             last_extract_error: Mutex::new(None),
             drop_report: Mutex::new(None),
@@ -476,6 +482,18 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
                 "checked": state.update_checked.load(Ordering::Relaxed),
             })
         }
+
+        "RecheckLauncherUpdate" => {
+            // Fire-and-forget: the check blocks on a GitHub API request, and
+            // this bridge call is a synchronous XHR, so running it inline would
+            // freeze the webview. The frontend polls `isCheckingLauncherUpdate`
+            // until it clears, then reads the refreshed `CheckForLauncherUpdate`
+            // cache for the verdict (see `launcher::recheck_now`).
+            let state_clone = Arc::clone(state);
+            std::thread::spawn(move || launcher::recheck_now(state_clone));
+            Value::Null
+        }
+        "isCheckingLauncherUpdate" => json!(state.update_checking.load(Ordering::Relaxed)),
 
         "SelfUpdateLauncher" => {
             let state_clone = Arc::clone(state);
