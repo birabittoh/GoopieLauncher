@@ -109,10 +109,15 @@ fn self_update_check_requested() -> bool {
 /// Used by shortcuts to auto-play a game on launch.
 fn auto_play_game() -> Option<String> {
     let args: Vec<String> = std::env::args().collect();
+    parse_play_arg(&args)
+}
+
+/// Extract `--play <game>` from an argv slice.
+fn parse_play_arg(argv: &[String]) -> Option<String> {
     let mut i = 1;
-    while i < args.len() {
-        if args[i] == "--play" {
-            return args.get(i + 1).cloned();
+    while i < argv.len() {
+        if argv[i] == "--play" {
+            return argv.get(i + 1).cloned();
         }
         i += 1;
     }
@@ -195,11 +200,24 @@ pub fn run() {
         // A second launch just focuses/restores the existing window instead of
         // spawning a duplicate instance — cross-platform (Windows + Linux; a
         // no-op on macOS, which already single-instances .app bundles).
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 show_main_window(&window);
                 let state = app.state::<AppState>();
                 discord::set_window_visible(state.inner(), true);
+
+                // If the second instance was launched with --play <game>
+                // (i.e. a desktop shortcut), forward it to the already-running
+                // window so the game actually starts instead of just showing
+                // the launcher.
+                if let Some(game) = parse_play_arg(&argv) {
+                    *state.auto_play_game.lock().unwrap() = Some(game.clone());
+                    state.exit_after_game.store(true, std::sync::atomic::Ordering::Relaxed);
+                    let _ = window.eval(&format!(
+                        "window.dispatchEvent(new CustomEvent('goopie:auto-play', {{ detail: {{ game: '{}' }} }}))",
+                        game.replace('\\', "\\\\").replace('\'', "\\'"),
+                    ));
+                }
             }
         }))
         .manage(state)
