@@ -676,6 +676,10 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
             games::open_build_logs_folder(&str_arg(&args, 0), &str_arg(&args, 1));
             Value::Null
         }
+        "openGameConfigFile" => {
+            games::open_config_file(&str_arg(&args, 0));
+            Value::Null
+        }
         "getInstalledDlc" => {
             json!(extract::dlc::list_installed_dlc(&str_arg(&args, 0)))
         }

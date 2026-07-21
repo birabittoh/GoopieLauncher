@@ -88,6 +88,40 @@ pub fn open_folder(path: &str) {
     let _ = with_clean_appimage_env(|| open::that(path));
 }
 
+/// Opens the system file manager at `path`'s parent directory with `path`
+/// itself pre-selected/highlighted. Falls back to just opening the parent
+/// directory (no highlight) if `path` doesn't exist or the platform-specific
+/// reveal command isn't available (e.g. an unrecognized Linux file manager) —
+/// the `open` crate has no "select" concept, so this shells out directly.
+pub fn reveal_file(path: &str) {
+    let p = std::path::Path::new(path);
+    if !p.exists() {
+        if let Some(parent) = p.parent() {
+            open_folder(&parent.to_string_lossy());
+        }
+        return;
+    }
+
+    with_clean_appimage_env(|| {
+        #[cfg(target_os = "windows")]
+        {
+            let _ = std::process::Command::new("explorer").arg(format!("/select,{}", p.display())).spawn();
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let _ = std::process::Command::new("open").arg("-R").arg(p).spawn();
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        {
+            // No universal "select" across Linux file managers — open the
+            // containing folder instead.
+            if let Some(parent) = p.parent() {
+                let _ = open::that(parent);
+            }
+        }
+    });
+}
+
 /// Returns the free space (in bytes) on the filesystem containing `path`.
 /// `path` need not exist yet — only its nearest existing ancestor is queried.
 /// Returns `0` if the space can't be determined (missing drive, permissions, etc.),

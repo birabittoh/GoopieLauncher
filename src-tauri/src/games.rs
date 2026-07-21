@@ -351,6 +351,31 @@ pub fn open_build_logs_folder(game: &str, build: &str) {
     crate::platform::open_folder(&dir.to_string_lossy());
 }
 
+/// Locates the `<game>.toml` cvar config file (see `write_cvars_config`) among
+/// this game's installed builds — each build gets its own copy next to its
+/// exe. Prefers a build whose file already exists (i.e. has been launched at
+/// least once); otherwise falls back to where the first installed build's
+/// copy would be written, even though it doesn't exist yet.
+fn find_config_file(game: &str) -> Option<PathBuf> {
+    let builds = get_installed_builds(game);
+    let candidates: Vec<PathBuf> = builds.iter().filter_map(|b| {
+        let key = b["name"].as_str()?;
+        let dir = build_dir(game, key);
+        let exe_path = installed_exe_path(&dir, game);
+        let exe_dir = exe_path.parent().unwrap_or(&dir);
+        Some(exe_dir.join(format!("{}.toml", game)))
+    }).collect();
+    candidates.iter().find(|p| p.exists()).cloned().or_else(|| candidates.into_iter().next())
+}
+
+/// Open the system file manager with this game's `<game>.toml` cvar config
+/// file pre-selected. No-op if the game has no installed builds at all.
+pub fn open_config_file(game: &str) {
+    if let Some(path) = find_config_file(game) {
+        crate::platform::reveal_file(&path.to_string_lossy());
+    }
+}
+
 // ── Uninstall ─────────────────────────────────────────────────────────────────
 
 /// Remove a single installed build (its entire `builds/<tag>/<asset>/` directory).

@@ -134,6 +134,7 @@
   window.RemoveDlc         = function (g, t, h)    { return call('RemoveDlc', [g, t, h]); };
   window.openDlcFolder     = function (g, t, h)    { return call('openDlcFolder', [g, t, h]); };
   window.openBuildLogsFolder = function (g, b)     { return call('openBuildLogsFolder', [g, b]); };
+  window.openGameConfigFile = function (g)         { return call('openGameConfigFile', [g]); };
 
   // ── Mods ──────────────────────────────────────────────────────────────────
   // installModArchives/pickModArchives are fire-and-forget (extraction runs
