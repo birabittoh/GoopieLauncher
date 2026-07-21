@@ -18,8 +18,12 @@
 //!   - Copy the client ID (looks like `<numbers>.apps.googleusercontent.com`).
 //! Bake it into release / CI builds by setting `GOOPIE_OAUTH_CLIENT_ID` in the build
 //! environment before `cargo build` / `cargo tauri build`. For local dev you can also
-//! export it in your shell at runtime. Desktop app client IDs are public by design.
-//! No client secret is needed — the PKCE code verifier is the proof of possession.
+//! export it in your shell at runtime, or just drop the `client_secret_*.json` file
+//! Google Cloud Console lets you download for the credential into the repo root or
+//! `src-tauri/` — see `client_secret_file`. Desktop app client IDs are public by design.
+//! No client secret is needed for the PKCE flow itself — the code verifier is the proof
+//! of possession — but Google's token endpoint still requires one be sent (see
+//! `resolve_client_secret`).
 //!
 //! In Firebase Console → Authentication → Sign-in providers → Google:
 //!   - Add the Desktop client ID to "Allowlist client IDs from external projects".
@@ -31,10 +35,59 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
-use std::sync::mpsc;
+use std::sync::{mpsc, OnceLock};
 use std::time::Duration;
 
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
+
+/// Shape of a Google Cloud Console "Download JSON" OAuth client file — the
+/// client id/secret live under `installed` for a Desktop app client (or
+/// `web` for a Web application client, supported here too since either works
+/// for local dev).
+#[derive(Deserialize)]
+struct OAuthClientFile {
+    installed: Option<OAuthClientFields>,
+    web: Option<OAuthClientFields>,
+}
+
+#[derive(Deserialize)]
+struct OAuthClientFields {
+    client_id: String,
+    client_secret: Option<String>,
+}
+
+/// Finds and parses a `client_secret_*.json` file (as downloaded from Google
+/// Cloud Console → Credentials) for local dev convenience, so contributors
+/// don't have to export `GOOPIE_OAUTH_CLIENT_ID`/`GOOPIE_OAUTH_CLIENT_SECRET`
+/// by hand. Searched in the current working directory and its parent (covers
+/// both `cargo run`/`cargo tauri dev` from `src-tauri/` and from the repo
+/// root), matched by prefix since the downloaded filename includes an
+/// opaque client id suffix. Parsed once and cached; a missing or malformed
+/// file is treated the same as "not present" so the env-var path still works.
+fn client_secret_file() -> Option<&'static OAuthClientFields> {
+    static CACHE: OnceLock<Option<OAuthClientFields>> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        let cwd = std::env::current_dir().ok()?;
+        let candidates = [Some(cwd.clone()), cwd.parent().map(|p| p.to_path_buf())];
+        for dir in candidates.into_iter().flatten() {
+            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if !name.starts_with("client_secret_") || !name.ends_with(".json") {
+                    continue;
+                }
+                let Ok(contents) = std::fs::read_to_string(entry.path()) else { continue };
+                let Ok(parsed) = serde_json::from_str::<OAuthClientFile>(&contents) else { continue };
+                if let Some(fields) = parsed.installed.or(parsed.web) {
+                    return Some(fields);
+                }
+            }
+        }
+        None
+    }).as_ref()
+}
 
 /// The Desktop OAuth client ID baked in at build time.
 ///
@@ -48,11 +101,19 @@ fn resolve_client_id() -> Result<String, String> {
     if let Some(id) = option_env!("GOOPIE_OAUTH_CLIENT_ID") {
         return Ok(id.to_string());
     }
-    std::env::var("GOOPIE_OAUTH_CLIENT_ID").map_err(|_| {
-        "GOOPIE_OAUTH_CLIENT_ID must be set at build time (export before cargo build) \
-         or at runtime. Create a Desktop-app OAuth client in Google Cloud Console."
-            .to_string()
-    })
+    if let Ok(id) = std::env::var("GOOPIE_OAUTH_CLIENT_ID") {
+        return Ok(id);
+    }
+    if let Some(fields) = client_secret_file() {
+        return Ok(fields.client_id.clone());
+    }
+    Err(
+        "GOOPIE_OAUTH_CLIENT_ID must be set at build time (export before cargo build), \
+         at runtime, or via a client_secret_*.json file (from Google Cloud Console → \
+         Credentials → Download JSON) in the repo root or src-tauri/. Create a Desktop-app \
+         OAuth client in Google Cloud Console."
+            .to_string(),
+    )
 }
 
 /// Google requires the client secret in the token exchange even for Desktop app credentials
@@ -63,11 +124,21 @@ fn resolve_client_secret() -> Result<String, String> {
     if let Some(s) = option_env!("GOOPIE_OAUTH_CLIENT_SECRET") {
         return Ok(s.to_string());
     }
-    std::env::var("GOOPIE_OAUTH_CLIENT_SECRET").map_err(|_| {
-        "GOOPIE_OAUTH_CLIENT_SECRET must be set at build time or at runtime. \
-         Find it in Google Cloud Console → Credentials → your Desktop app client → Download JSON."
-            .to_string()
-    })
+    if let Ok(s) = std::env::var("GOOPIE_OAUTH_CLIENT_SECRET") {
+        return Ok(s);
+    }
+    if let Some(fields) = client_secret_file() {
+        if let Some(secret) = &fields.client_secret {
+            return Ok(secret.clone());
+        }
+    }
+    Err(
+        "GOOPIE_OAUTH_CLIENT_SECRET must be set at build time, at runtime, or via a \
+         client_secret_*.json file (from Google Cloud Console → Credentials → Download JSON) \
+         in the repo root or src-tauri/. Find it in Google Cloud Console → Credentials → \
+         your Desktop app client → Download JSON."
+            .to_string(),
+    )
 }
 
 /// Identity scopes requested by the normal sign-in flow (unchanged from before

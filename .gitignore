@@ -18,6 +18,11 @@ dist/
 .DS_Store
 Thumbs.db
 
+# Google OAuth client credentials downloaded from Cloud Console for local dev
+# (see src-tauri/src/auth.rs's client_secret_file) — never commit these.
+client_secret_*.json
+src-tauri/client_secret_*.json
+
 # Tauri build artefacts
 *.msi
 *.deb
