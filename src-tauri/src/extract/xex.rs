@@ -318,6 +318,10 @@ impl Xdbf {
             let flags    = read_u32_be(block, ptr + 16);
             ptr += 0x24;
 
+            if id == 0 {
+                continue;
+            }
+
             out.push(XdbfAchievement {
                 id,
                 label: self.get_string(language, label_id),
