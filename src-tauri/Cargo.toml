@@ -65,6 +65,12 @@ toml_edit     = "0.20"
 # Base64 encoding (achievement icon data URLs delivered over the bridge)
 base64        = "0.22"
 
+# Image processing (cover art cropping for Steam grid)
+image         = "0.25"
+
+# CRC32 for Steam shortcut appid generation
+crc32fast     = "1"
+
 # Temp directories (drag-and-drop staging)
 tempfile      = "3"
 

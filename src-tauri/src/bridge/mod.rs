@@ -66,6 +66,26 @@ pub struct RunningGame {
     pub started_at: Instant,
 }
 
+/// Path to a per-game marker file that exists for exactly as long as `game`
+/// has a tracked running process. Cross-process (unlike `AppState`), so a
+/// separate short-lived process — the one Steam launches for a `--play`
+/// shortcut while the launcher is already running, see `steam_play_relay` in
+/// `lib.rs` — can poll it to know when to exit, instead of exiting instantly
+/// like tauri-plugin-single-instance's own detection does (which would make
+/// Steam think the game already stopped seconds into every session, since it
+/// tracks "running" by whether the process it spawned is still alive).
+pub fn running_marker_path(game: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("goopie-playing-{}.lock", game))
+}
+
+fn mark_game_running(game: &str) {
+    let _ = std::fs::write(running_marker_path(game), b"");
+}
+
+fn unmark_game_running(game: &str) {
+    let _ = std::fs::remove_file(running_marker_path(game));
+}
+
 pub struct AppState {
     /// Game download progress: -1 = idle, 0-100 = percent.
     pub download_progress: AtomicI32,
@@ -267,6 +287,7 @@ fn launch_and_track(state: &Arc<AppState>, game: String, build: String, cvar_arg
     } else {
         discord::set_hidden(state);
     }
+    mark_game_running(&game);
     *state.running_game.lock().unwrap() = Some(RunningGame {
         session_id,
         game,
@@ -307,6 +328,7 @@ fn monitor_running_game(state: Arc<AppState>, session_id: u64) {
             Ok(Some(_status)) => {
                 playtime::record_session(&running.game, running.started_at.elapsed().as_secs());
                 let game = running.game.clone();
+                unmark_game_running(&game);
                 *lock = None;
                 drop(lock);
                 leaderboards::restore_after_exit(&game);
@@ -342,6 +364,24 @@ fn monitor_running_game(state: Arc<AppState>, session_id: u64) {
     }
 }
 
+/// Kills the currently running game only if it's still `game` — used from
+/// `lib.rs`'s `wait_for_pid_exit` watcher when the relay process for a Steam
+/// (or other already-running-instance) shortcut launch disappears before the
+/// game itself exited (e.g. the user hit Steam's own "Close" button, which
+/// only terminates the process *Steam* launched). The name check avoids
+/// closing a *different* game the user has since started directly, in the
+/// unlikely case that race happens.
+pub fn kill_running_game_if_matches(state: &Arc<AppState>, game: &str) -> bool {
+    {
+        let lock = state.running_game.lock().unwrap();
+        match lock.as_ref() {
+            Some(running) if running.game == game => {}
+            _ => return false,
+        }
+    }
+    kill_running_game(state)
+}
+
 /// Kill and reap the currently-tracked game process (if any), clearing the
 /// shared state. Used both for the explicit "Close" action and when swapping
 /// to a different game.
@@ -349,6 +389,7 @@ fn kill_running_game(state: &Arc<AppState>) -> bool {
     let mut lock = state.running_game.lock().unwrap();
     let Some(mut running) = lock.take() else { return false };
     playtime::record_session(&running.game, running.started_at.elapsed().as_secs());
+    unmark_game_running(&running.game);
     leaderboards::restore_after_exit(&running.game);
     // Same Drive push as the natural-exit path in `monitor_running_game` —
     // this fn also runs for an explicit "Close" and for swapping to a
@@ -997,6 +1038,34 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
             let title = str_arg(&args, 1);
             if let Err(e) = shortcuts::remove_applications(&game, &title) {
                 eprintln!("[bridge] RemoveAppShortcut error: {}", e);
+            }
+            Value::Null
+        }
+        "steamShortcutExists" => {
+            let game  = str_arg(&args, 0);
+            let title = str_arg(&args, 1);
+            json!(shortcuts::exists_steam(&game, &title))
+        }
+        "steamInstalled" => json!(shortcuts::steam_installed()),
+        "CreateSteamShortcut" => {
+            let game       = str_arg(&args, 0);
+            let title      = str_arg(&args, 1);
+            let icon_url   = str_arg(&args, 2);
+            let cover_url  = str_arg(&args, 3);
+            let header_url = str_arg(&args, 4);
+            let logo_url   = str_arg(&args, 5);
+            std::thread::spawn(move || {
+                if let Err(e) = shortcuts::create_steam(&game, &title, &icon_url, &cover_url, &header_url, &logo_url) {
+                    eprintln!("[bridge] CreateSteamShortcut error: {}", e);
+                }
+            });
+            Value::Null
+        }
+        "RemoveSteamShortcut" => {
+            let game  = str_arg(&args, 0);
+            let title = str_arg(&args, 1);
+            if let Err(e) = shortcuts::remove_steam(&game, &title) {
+                eprintln!("[bridge] RemoveSteamShortcut error: {}", e);
             }
             Value::Null
         }

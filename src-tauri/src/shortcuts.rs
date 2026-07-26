@@ -9,7 +9,10 @@
 //! The launcher + website then resolve the current build, cvars, and all other
 //! options at runtime — nothing is frozen at shortcut-creation time.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
+
+use image::GenericImageView;
 
 use crate::games;
 
@@ -336,8 +339,613 @@ pub fn remove_desktop(game: &str, _title: &str) -> Result<(), String> {
 pub fn remove_applications(game: &str, _title: &str) -> Result<(), String> {
     let path = xdg_applications_dir().join(desktop_filename(game));
     if path.exists() {
-        std::fs::remove_file(&path).map_err(|e| format!("Failed to remove shortcut: {}", e))?;
+        std::fs::remove_file(&path).map_err(|e| format!("Failed to remove applications shortcut: {}", e))?;
         eprintln!("[shortcuts] Removed applications: {}", path.display());
+    }
+    Ok(())
+}
+
+// ── Steam shortcut (shortcuts.vdf) ─────────────────────────────────────────
+
+/// Binary VDF type markers used in Steam's shortcuts.vdf.
+const VDF_OBJECT: u8 = 0x00;
+const VDF_STRING: u8 = 0x01;
+const VDF_INT32: u8 = 0x02;
+const VDF_END: u8 = 0x08;
+
+/// Fields that Steam expects to be stored as 32-bit integers rather than
+/// strings. Writing them as strings makes Steam treat the whole shortcut
+/// entry as corrupt and silently prune it on the next launch.
+const VDF_INT_FIELDS: &[&str] = &[
+    "appid",
+    "IsHidden",
+    "AllowDesktopConfig",
+    "AllowOverlay",
+    "OpenVR",
+    "Devkit",
+    "DevkitOverrideAppID",
+    "LastPlayTime",
+];
+
+/// A single shortcut entry: field name → value.
+type ShortcutFields = HashMap<String, String>;
+/// Map from shortcut index ("0", "1", …) → fields.
+type ShortcutsMap = HashMap<String, ShortcutFields>;
+
+/// Find the path to `userdata/<uid>/config/shortcuts.vdf` for the first
+/// Steam user directory found. Prefers a user that already has a
+/// `shortcuts.vdf`, but falls back to the first user directory otherwise
+/// (the file may not exist yet, e.g. if no non-Steam shortcut has ever been
+/// added). Returns `None` only when Steam itself isn't installed.
+fn find_shortcuts_vdf() -> Option<PathBuf> {
+    let candidates: Vec<PathBuf> = if cfg!(windows) {
+        let mut v = Vec::new();
+        if let Ok(pf) = std::env::var("ProgramFiles(x86)") {
+            v.push(PathBuf::from(pf).join("Steam").join("userdata"));
+        }
+        #[cfg(windows)]
+        if let Ok(reg) = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
+            .open_subkey("SOFTWARE\\Valve\\Steam")
+        {
+            if let Ok(path) = reg.get_value::<String, _>("SteamPath") {
+                v.push(PathBuf::from(path.replace('/', "\\")).join("userdata"));
+            }
+        }
+        v
+    } else {
+        let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_default();
+        vec![
+            home.join(".steam").join("steam").join("userdata"),
+            home.join(".local").join("share").join("Steam").join("userdata"),
+            home.join(".steam").join("root").join("userdata"),
+        ]
+    };
+
+    let mut fallback: Option<PathBuf> = None;
+    for base in &candidates {
+        if !base.is_dir() {
+            continue;
+        }
+        if let Ok(entries) = std::fs::read_dir(base) {
+            for entry in entries.flatten() {
+                if !entry.path().is_dir() {
+                    continue;
+                }
+                let vdf = entry.path().join("config").join("shortcuts.vdf");
+                if vdf.exists() {
+                    return Some(vdf);
+                }
+                if fallback.is_none() {
+                    fallback = Some(vdf);
+                }
+            }
+        }
+    }
+    fallback
+}
+
+// ── Binary VDF reader ──────────────────────────────────────────────────────
+
+/// Steam's binary VDF strings are NUL-terminated C-strings, not
+/// length-prefixed — an earlier version of this reader assumed a u16
+/// length prefix, which produced files Steam's own parser couldn't read
+/// (and silently discarded).
+fn vdf_read_string(data: &[u8], pos: &mut usize) -> Option<String> {
+    let start = *pos;
+    while *pos < data.len() && data[*pos] != 0 {
+        *pos += 1;
+    }
+    if *pos >= data.len() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&data[start..*pos]).into_owned();
+    *pos += 1; // skip the NUL
+    Some(s)
+}
+
+/// Recursively read a binary VDF value. For nested objects (like `tags`),
+/// flatten child strings into `"key=value,..."` form.
+fn vdf_read_value(data: &[u8], pos: &mut usize, ty: u8) -> Option<String> {
+    match ty {
+        VDF_STRING => vdf_read_string(data, pos),
+        VDF_INT32 => {
+            if *pos + 4 > data.len() {
+                return None;
+            }
+            let v = u32::from_le_bytes([data[*pos], data[*pos + 1], data[*pos + 2], data[*pos + 3]]);
+            *pos += 4;
+            Some(v.to_string())
+        }
+        VDF_OBJECT => {
+            let mut parts = Vec::new();
+            loop {
+                if *pos >= data.len() {
+                    return None;
+                }
+                let child_ty = data[*pos];
+                *pos += 1;
+                if child_ty == VDF_END {
+                    break;
+                }
+                let key = vdf_read_string(data, pos)?;
+                if let Some(val) = vdf_read_value(data, pos, child_ty) {
+                    if val.is_empty() {
+                        parts.push(key);
+                    } else {
+                        parts.push(format!("{}={}", key, val));
+                    }
+                }
+            }
+            Some(parts.join(","))
+        }
+        _ => None,
+    }
+}
+
+/// Parse the children of a `VDF_OBJECT` starting right after its type+key
+/// header (i.e. `pos` points at the first child's type byte) into a map of
+/// index → fields. Stops at the object's `VDF_END` terminator.
+fn parse_shortcuts_object(data: &[u8], pos: &mut usize) -> ShortcutsMap {
+    let mut result = ShortcutsMap::new();
+    loop {
+        if *pos >= data.len() {
+            break;
+        }
+        let ty = data[*pos];
+        *pos += 1;
+        if ty == VDF_END {
+            break;
+        }
+        let key = match vdf_read_string(data, pos) {
+            Some(k) => k,
+            None => break,
+        };
+        if ty != VDF_OBJECT {
+            // skip non-object entries
+            let _ = vdf_read_value(data, pos, ty);
+            continue;
+        }
+        // Read shortcut object fields.
+        let mut fields = ShortcutFields::new();
+        loop {
+            if *pos >= data.len() {
+                break;
+            }
+            let field_ty = data[*pos];
+            *pos += 1;
+            if field_ty == VDF_END {
+                break;
+            }
+            let field_key = match vdf_read_string(data, pos) {
+                Some(k) => k,
+                None => break,
+            };
+            let field_val = vdf_read_value(data, pos, field_ty)
+                .unwrap_or_default();
+            fields.insert(field_key, field_val);
+        }
+        result.insert(key, fields);
+    }
+    result
+}
+
+/// Parse `shortcuts.vdf` into a map of index → fields. The file's real
+/// top-level structure is `{ "shortcuts" { "0" {...}, "1" {...}, ... } }` —
+/// the entries live one level deeper than the file root. The root itself
+/// has no leading type/key header — it's a bare sequence of entries
+/// terminated by a single `VDF_END`.
+fn read_shortcuts_vdf(path: &PathBuf) -> ShortcutsMap {
+    let Ok(data) = std::fs::read(path) else {
+        return ShortcutsMap::new();
+    };
+    let mut pos = 0;
+
+    loop {
+        if pos >= data.len() {
+            break;
+        }
+        let ty = data[pos];
+        pos += 1;
+        if ty == VDF_END {
+            break;
+        }
+        let key = match vdf_read_string(&data, &mut pos) {
+            Some(k) => k,
+            None => break,
+        };
+        if ty != VDF_OBJECT {
+            let _ = vdf_read_value(&data, &mut pos, ty);
+            continue;
+        }
+        if key.eq_ignore_ascii_case("shortcuts") {
+            return parse_shortcuts_object(&data, &mut pos);
+        }
+        // Not the section we want — skip past it.
+        let _ = parse_shortcuts_object(&data, &mut pos);
+    }
+    ShortcutsMap::new()
+}
+
+// ── Binary VDF writer ──────────────────────────────────────────────────────
+
+/// NUL-terminated C-string, matching Steam's actual binary VDF encoding.
+fn vdf_write_string(out: &mut Vec<u8>, s: &str) {
+    out.extend_from_slice(s.as_bytes());
+    out.push(0);
+}
+
+/// Serialize a `ShortcutsMap` back to binary VDF and write it to disk.
+///
+/// Real `shortcuts.vdf` files wrap all entries in a top-level "shortcuts"
+/// object: `{ "shortcuts" { "0" {...}, "1" {...} } }`. Omitting that
+/// wrapper produces a file Steam can't find any shortcuts in, so it
+/// silently discards them on the next launch. The file root itself has
+/// no leading type/key header — it's a bare sequence of entries (here,
+/// just the one "shortcuts" entry) terminated by a single `VDF_END`.
+fn write_shortcuts_vdf(path: &PathBuf, map: &ShortcutsMap) -> Result<(), String> {
+    let mut data = Vec::new();
+    data.push(VDF_OBJECT);
+    vdf_write_string(&mut data, "shortcuts");
+
+    let mut keys: Vec<&String> = map.keys().collect();
+    keys.sort_by_key(|k| k.parse::<u32>().unwrap_or(0));
+
+    for key in keys {
+        let obj = &map[key];
+        data.push(VDF_OBJECT);
+        vdf_write_string(&mut data, key);
+
+        for (field, value) in obj {
+            if field == "tags" {
+                // tags is always a nested object ("0" = "favorite", …),
+                // even when it has no entries — Steam expects the type
+                // marker to be VDF_OBJECT regardless.
+                data.push(VDF_OBJECT);
+                vdf_write_string(&mut data, field);
+                for (i, tag) in value.split(',').enumerate() {
+                    let tag = tag.trim();
+                    if !tag.is_empty() {
+                        data.push(VDF_STRING);
+                        vdf_write_string(&mut data, &i.to_string());
+                        vdf_write_string(&mut data, tag);
+                    }
+                }
+                data.push(VDF_END);
+            } else if VDF_INT_FIELDS.contains(&field.as_str()) {
+                data.push(VDF_INT32);
+                vdf_write_string(&mut data, field);
+                let n: u32 = value.parse().unwrap_or(0);
+                data.extend_from_slice(&n.to_le_bytes());
+            } else {
+                data.push(VDF_STRING);
+                vdf_write_string(&mut data, field);
+                vdf_write_string(&mut data, value);
+            }
+        }
+        data.push(VDF_END);
+    }
+
+    data.push(VDF_END); // closes "shortcuts" object
+    data.push(VDF_END); // closes root section
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create Steam config directory: {}", e))?;
+    }
+    std::fs::write(path, &data)
+        .map_err(|e| format!("Failed to write shortcuts.vdf: {}", e))?;
+    Ok(())
+}
+
+// ── Cross-platform Steam shortcut API ──────────────────────────────────────
+
+/// Steam's "legacy" shortcut appid: `CRC32(Exe + AppName) | 0x80000000`.
+/// The high bit flags it as a non-Steam-game entry — Steam derives/
+/// validates this from the stored Exe/AppName, so getting the formula
+/// wrong (wrong byte order, stray null separators, missing flag bit)
+/// makes Steam treat the whole shortcut as invalid and drop it silently.
+fn steam_shortcut_appid(name: &str, exe: &str) -> u32 {
+    let mut h = crc32fast::Hasher::new();
+    h.update(exe.as_bytes());
+    h.update(name.as_bytes());
+    h.finalize() | 0x8000_0000
+}
+
+/// Returns `true` when `fields` looks like a Goopie launcher shortcut for `game`.
+fn is_goopie_shortcut(fields: &ShortcutFields, exe: &str, game: &str) -> bool {
+    let vdf_exe = fields.get("Exe").map(|s| s.as_str()).unwrap_or("").trim_matches('"');
+    let opts = fields.get("LaunchOptions").map(|s| s.as_str()).unwrap_or("");
+    vdf_exe == exe && (opts.contains(&format!("--play {}", game))
+        || opts.contains(&format!("--play {} --local", game)))
+}
+
+/// Download an image from `url` (if non-empty) and save it to
+/// `<grid_dir>/<stem>.png`. Silently skips on failure.
+fn download_and_save_grid_image(url: &str, grid_dir: &std::path::Path, stem: &str) {
+    if url.is_empty() {
+        return;
+    }
+    let client = match reqwest::blocking::Client::builder()
+        .user_agent("Goopie-Launcher/2")
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[shortcuts] Failed to build HTTP client: {}", e);
+            return;
+        }
+    };
+    let resp = match client.get(url).send() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[shortcuts] Failed to download grid image {}: {}", url, e);
+            return;
+        }
+    };
+    if !resp.status().is_success() {
+        eprintln!("[shortcuts] Grid image download returned {}", resp.status());
+        return;
+    }
+    let bytes = match resp.bytes() {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("[shortcuts] Failed to read grid image bytes: {}", e);
+            return;
+        }
+    };
+    let _ = std::fs::create_dir_all(grid_dir);
+    let path = grid_dir.join(format!("{}.png", stem));
+    if let Err(e) = std::fs::write(&path, &bytes) {
+        eprintln!("[shortcuts] Failed to write grid image {}: {}", path.display(), e);
+    }
+}
+
+/// Download a cover image, detect landscape wraps, and crop to the front
+/// cover (right ~47.3%) before saving. Falls back to the full image when
+/// decoding fails or the image is already portrait.
+fn download_and_save_cover_grid_image(
+    url: &str,
+    grid_dir: &std::path::Path,
+    stem: &str,
+) {
+    if url.is_empty() {
+        return;
+    }
+    let client = match reqwest::blocking::Client::builder()
+        .user_agent("Goopie-Launcher/2")
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[shortcuts] Failed to build HTTP client for cover: {}", e);
+            return;
+        }
+    };
+    let resp = match client.get(url).send() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[shortcuts] Failed to download cover {}: {}", url, e);
+            return;
+        }
+    };
+    if !resp.status().is_success() {
+        eprintln!("[shortcuts] Cover download returned {}", resp.status());
+        return;
+    }
+    let bytes = match resp.bytes() {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("[shortcuts] Failed to read cover bytes: {}", e);
+            return;
+        }
+    };
+
+    // Try to decode and crop landscape wraps to just the front cover.
+    let out_bytes = match image::load_from_memory(&bytes) {
+        Ok(img) => {
+            let (w, h) = img.dimensions();
+            let cropped = if w > h {
+                // Landscape wrap — crop right portion (front cover).
+                // Matches the ratio actually used to render covers in the
+                // game grid/list tiles (useCoverStyle.ts's
+                // `backgroundSize: '211% 100%'` shows the rightmost 1/2.11
+                // of the image width) rather than the looser 700/1480
+                // approximation used only by the decorative background strip.
+                let front_w = (w as f64 / 2.11) as u32;
+                let x = w - front_w;
+                img.crop_imm(x, 0, front_w, h)
+            } else {
+                img
+            };
+            let mut buf = std::io::Cursor::new(Vec::new());
+            if cropped.write_to(&mut buf, image::ImageFormat::Png).is_ok() {
+                Some(buf.into_inner())
+            } else {
+                None
+            }
+        }
+        Err(e) => {
+            eprintln!("[shortcuts] Failed to decode cover image: {}", e);
+            // Save the raw bytes as a fallback.
+            Some(bytes.to_vec())
+        }
+    };
+
+    if let Some(data) = out_bytes {
+        let _ = std::fs::create_dir_all(grid_dir);
+        let path = grid_dir.join(format!("{}.png", stem));
+        if let Err(e) = std::fs::write(&path, &data) {
+            eprintln!("[shortcuts] Failed to write cover grid image {}: {}", path.display(), e);
+        }
+    }
+}
+
+/// Save Steam grid images (portrait, hero + logo) for a shortcut. Grid
+/// filenames use the signed (i32) form of the CRC32 appid.
+fn save_steam_grid_images(
+    grid_dir: &std::path::Path,
+    appid: u32,
+    cover_url: &str,
+    header_url: &str,
+    logo_url: &str,
+) {
+    // Grid artwork filenames use the *unsigned* decimal appid — Steam does
+    // not accept the signed/negative form here even though the "appid"
+    // field itself is stored as a two's-complement int32 in the vdf.
+    // Portrait / box art — the modern library grid view reads this from the
+    // "p"-suffixed filename; the bare "<appid>.png" name is the legacy
+    // horizontal capsule and is ignored by the current Steam UI.
+    download_and_save_cover_grid_image(cover_url, grid_dir, &format!("{}p", appid));
+    // Hero / wide banner — shown at top of game details page.
+    download_and_save_grid_image(header_url, grid_dir, &format!("{}_hero", appid));
+    // Logo — overlaid on the hero image.
+    download_and_save_grid_image(logo_url, grid_dir, &format!("{}_logo", appid));
+}
+
+/// Delete Steam grid images for a shortcut by appid.
+fn remove_steam_grid_images(grid_dir: &std::path::Path, appid: u32) {
+    for suffix in &["p", "_hero", "_logo"] {
+        let path = grid_dir.join(format!("{}{}.png", appid, suffix));
+        if path.exists() {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
+/// Derive the Steam `config/grid` directory from a `shortcuts.vdf` path.
+fn grid_dir_from_vdf(vdf_path: &std::path::Path) -> std::path::PathBuf {
+    vdf_path.parent().unwrap_or(vdf_path).join("grid")
+}
+
+/// Check whether a Goopie shortcut for `game` exists in the user's Steam
+/// `shortcuts.vdf`.
+pub fn exists_steam(game: &str, _title: &str) -> bool {
+    let Some(vdf_path) = find_shortcuts_vdf() else {
+        return false;
+    };
+    let exe = match launcher_exe() {
+        Ok(e) => e.to_string_lossy().into_owned(),
+        Err(_) => return false,
+    };
+    let shortcuts = read_shortcuts_vdf(&vdf_path);
+    shortcuts.values().any(|f| is_goopie_shortcut(f, &exe, game))
+}
+
+/// Returns `true` when Steam is installed and a `shortcuts.vdf` was found.
+pub fn steam_installed() -> bool {
+    find_shortcuts_vdf().is_some()
+}
+
+/// Add a non-Steam shortcut for `game` to the user's Steam `shortcuts.vdf`.
+pub fn create_steam(game: &str, title: &str, icon_url: &str, cover_url: &str, header_url: &str, logo_url: &str) -> Result<(), String> {
+    let vdf_path = find_shortcuts_vdf()
+        .ok_or_else(|| "Could not find Steam shortcuts.vdf. Is Steam installed?".to_string())?;
+    let mut shortcuts = read_shortcuts_vdf(&vdf_path);
+
+    let exe = launcher_exe()?;
+    let exe_str = exe.to_string_lossy();
+
+    // Skip if it already exists.
+    if shortcuts.values().any(|f| is_goopie_shortcut(f, &exe_str, game)) {
+        eprintln!("[shortcuts] Steam shortcut already exists for {}", game);
+        return Ok(());
+    }
+
+    // Resolve icon — Steam supports PNG directly.
+    let icon_path = resolve_icon_png(game, icon_url)
+        .and_then(|png| {
+            let p = games::game_root(game).join("assets").join(".shortcut-icon.png");
+            std::fs::write(&p, &png).ok()?;
+            Some(p.to_string_lossy().into_owned())
+        })
+        .unwrap_or_default();
+
+    let start_dir = exe.parent()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    let args = if is_local_mode() {
+        format!("--play {} --local", game)
+    } else {
+        format!("--play {}", game)
+    };
+
+    let appid = steam_shortcut_appid(title, &format!("\"{}\"", exe_str));
+
+    let mut fields = ShortcutFields::new();
+    fields.insert("appid".into(), appid.to_string());
+    fields.insert("AppName".into(), title.into());
+    fields.insert("Exe".into(), format!("\"{}\"", exe_str));
+    fields.insert("StartDir".into(), format!("\"{}\"", start_dir));
+    fields.insert("icon".into(), icon_path);
+    fields.insert("ShortcutPath".into(), String::new());
+    fields.insert("LaunchOptions".into(), args);
+    fields.insert("IsHidden".into(), "0".into());
+    fields.insert("AllowDesktopConfig".into(), "1".into());
+    fields.insert("AllowOverlay".into(), "1".into());
+    fields.insert("OpenVR".into(), "0".into());
+    fields.insert("Devkit".into(), "0".into());
+    fields.insert("DevkitGameID".into(), String::new());
+    fields.insert("DevkitOverrideAppID".into(), String::new());
+    fields.insert("LastPlayTime".into(), "0".into());
+    fields.insert("FlatpakAppID".into(), String::new());
+    fields.insert("tags".into(), String::new());
+
+    let next_idx = shortcuts.keys()
+        .filter_map(|k| k.parse::<u32>().ok())
+        .max()
+        .map_or(0, |m| m + 1);
+
+    shortcuts.insert(next_idx.to_string(), fields);
+    write_shortcuts_vdf(&vdf_path, &shortcuts)?;
+
+    // Save grid images (hero + logo) so Steam shows them in the library.
+    let grid = grid_dir_from_vdf(&vdf_path);
+    save_steam_grid_images(&grid, appid, cover_url, header_url, logo_url);
+
+    eprintln!("[shortcuts] Created Steam shortcut: {} (appid {})", title, appid);
+    Ok(())
+}
+
+/// Remove the Goopie shortcut for `game` from the user's Steam `shortcuts.vdf`.
+pub fn remove_steam(game: &str, _title: &str) -> Result<(), String> {
+    let vdf_path = find_shortcuts_vdf()
+        .ok_or_else(|| "Could not find Steam shortcuts.vdf. Is Steam installed?".to_string())?;
+    let mut shortcuts = read_shortcuts_vdf(&vdf_path);
+
+    let exe = launcher_exe()?;
+    let exe_str = exe.to_string_lossy();
+    let grid = grid_dir_from_vdf(&vdf_path);
+
+    let mut removed_appids = Vec::new();
+    let to_remove: Vec<String> = shortcuts.iter()
+        .filter(|(_, f)| {
+            if is_goopie_shortcut(f, &exe_str, game) {
+                if let Some(id) = f.get("appid").and_then(|s| s.parse::<u32>().ok()) {
+                    removed_appids.push(id);
+                }
+                true
+            } else {
+                false
+            }
+        })
+        .map(|(k, _)| k.clone())
+        .collect();
+
+    if to_remove.is_empty() {
+        eprintln!("[shortcuts] No Steam shortcut found for {}", game);
+    } else {
+        for key in &to_remove {
+            shortcuts.remove(key);
+        }
+        write_shortcuts_vdf(&vdf_path, &shortcuts)?;
+        // Clean up grid images for removed shortcuts.
+        for id in &removed_appids {
+            remove_steam_grid_images(&grid, *id);
+        }
+        eprintln!("[shortcuts] Removed Steam shortcut for {}", game);
     }
     Ok(())
 }

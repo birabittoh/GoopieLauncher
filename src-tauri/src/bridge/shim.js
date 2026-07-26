@@ -194,6 +194,10 @@
   window.CreateAppShortcut      = function (g, t, i) { return call('CreateAppShortcut', [g, t, i]); };
   window.RemoveDesktopShortcut  = function (g, t)    { return call('RemoveDesktopShortcut', [g, t]); };
   window.RemoveAppShortcut      = function (g, t)    { return call('RemoveAppShortcut', [g, t]); };
+  window.steamShortcutExists    = function (g, t)    { return call('steamShortcutExists', [g, t]); };
+  window.steamInstalled         = function ()        { return call('steamInstalled', []); };
+  window.CreateSteamShortcut    = function (g, t, i, c, h, l) { return call('CreateSteamShortcut', [g, t, i, c, h, l]); };
+  window.RemoveSteamShortcut    = function (g, t)    { return call('RemoveSteamShortcut', [g, t]); };
   window.getAutoPlayGame   = function ()        { return call('getAutoPlayGame', []); };
   window.clearAutoPlayGame = function ()        { return call('clearAutoPlayGame', []); };
 

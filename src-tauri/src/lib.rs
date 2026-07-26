@@ -114,14 +114,129 @@ fn auto_play_game() -> Option<String> {
 
 /// Extract `--play <game>` from an argv slice.
 fn parse_play_arg(argv: &[String]) -> Option<String> {
+    parse_flag_arg(argv, "--play")
+}
+
+/// Extract the value following `flag` in an argv slice (1-indexed, skipping
+/// argv[0] — the exe path — same as `parse_play_arg`).
+fn parse_flag_arg(argv: &[String], flag: &str) -> Option<String> {
     let mut i = 1;
     while i < argv.len() {
-        if argv[i] == "--play" {
+        if argv[i] == flag {
             return argv.get(i + 1).cloned();
         }
         i += 1;
     }
     None
+}
+
+/// Blocks until the process identified by `pid` exits (or is already gone).
+/// Used to notice when Steam kills the relay process it launched (via its
+/// own "Close" button) out from under an in-progress game session — see
+/// `relay_play_to_running_instance`.
+#[cfg(windows)]
+fn wait_for_pid_exit(pid: u32) {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, WaitForSingleObject, INFINITE, PROCESS_SYNCHRONIZE};
+
+    let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+    if handle.is_null() {
+        return; // already exited, or we couldn't open it — either way, don't block
+    }
+    unsafe {
+        WaitForSingleObject(handle, INFINITE);
+        CloseHandle(handle);
+    }
+}
+
+/// If this is a `--play <game>` launch and another instance is already
+/// running, hand it off to that instance ourselves and block until the game
+/// session ends, then return `true` (caller should exit immediately without
+/// building a Tauri app of its own).
+///
+/// This deliberately bypasses `tauri_plugin_single_instance`'s own detection:
+/// that plugin forwards the launch args via the same Win32 `WM_COPYDATA`
+/// mechanism used below, but then calls `std::process::exit(0)` on this
+/// process *immediately* — fine for a Desktop/Start Menu shortcut (Explorer
+/// doesn't care how long the process it launched lives), but Steam tracks a
+/// non-Steam game's "running" state purely by whether the process *it*
+/// launched is still alive. An instant exit makes Steam show "Play" again a
+/// few seconds into every session even though the game is actually running
+/// (in a *different*, pre-existing process). Waiting here instead — using
+/// the per-game marker file `bridge::running_marker_path` maintained by
+/// `launch_and_track`/`monitor_running_game`/`kill_running_game` — keeps
+/// Steam's tracked process alive for the game's actual duration.
+///
+/// Returns `false` (proceed with normal startup, becoming the primary
+/// instance) when this isn't a `--play` launch, or no other instance is
+/// currently running — `tauri_plugin_single_instance`'s own detection still
+/// covers those cases as before.
+#[cfg(windows)]
+fn relay_play_to_running_instance(argv: &[String]) -> bool {
+    use std::time::Duration;
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::System::DataExchange::COPYDATASTRUCT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, SendMessageW, WM_COPYDATA};
+
+    let Some(game) = parse_play_arg(argv) else { return false };
+
+    // Same identifier/suffix scheme tauri-plugin-single-instance uses
+    // internally to name its message-only window (see its
+    // `platform_impl/windows.rs`) — kept in sync manually since the plugin
+    // exposes no public API for finding that window. `identifier` here must
+    // match `tauri.conf.json`'s `identifier`; the "semver" feature (which
+    // would add a version suffix) isn't enabled for our dependency.
+    const IDENTIFIER: &str = "xyz.goopie.launcher";
+    let class_name = encode_wide_null(&format!("{IDENTIFIER}-sic"));
+    let window_name = encode_wide_null(&format!("{IDENTIFIER}-siw"));
+
+    let hwnd: HWND = unsafe { FindWindowW(class_name.as_ptr(), window_name.as_ptr()) };
+    if hwnd.is_null() {
+        return false;
+    }
+
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let cwd = cwd.to_str().unwrap_or_default();
+    // Tack our own PID on as an extra pseudo-arg (parsed on the receiving end
+    // by `parse_flag_arg`, separately from `parse_play_arg`'s real-argv-only
+    // use) so the primary can notice if *this* process — the one Steam
+    // actually tracks — disappears before the game does. That happens when
+    // the user clicks Steam's own "Close" button: Steam just terminates the
+    // process it launched, which doesn't otherwise tell the primary (running
+    // the real game in a separate child process) to stop anything.
+    let mut relay_argv = argv.to_vec();
+    relay_argv.push("--relay-pid".to_string());
+    relay_argv.push(std::process::id().to_string());
+    let args = relay_argv.join("|");
+    let data = format!("{cwd}|{args}\0");
+    let bytes = data.as_bytes();
+    let cds = COPYDATASTRUCT {
+        dwData: 1542, // WMCOPYDATA_SINGLE_INSTANCE_DATA, matching the plugin
+        cbData: bytes.len() as _,
+        lpData: bytes.as_ptr() as _,
+    };
+    unsafe { SendMessageW(hwnd, WM_COPYDATA, 0, &cds as *const _ as _) };
+
+    let marker = bridge::running_marker_path(&game);
+    // Wait for the primary to actually start the game — bail out (and just
+    // exit) rather than hang forever if it never does (e.g. mods failed
+    // validation, the build wasn't installed, ...).
+    let mut waited = Duration::ZERO;
+    while !marker.exists() && waited < Duration::from_secs(20) {
+        std::thread::sleep(Duration::from_millis(300));
+        waited += Duration::from_millis(300);
+    }
+    // Now wait for it to finish — no timeout; a long play session is normal.
+    while marker.exists() {
+        std::thread::sleep(Duration::from_millis(750));
+    }
+    true
+}
+
+#[cfg(windows)]
+fn encode_wide_null(s: &str) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    std::ffi::OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
 }
 
 /// Un-hide/un-minimize and focus the main window — used to restore it from
@@ -153,6 +268,19 @@ fn navigate_and_show(app: &tauri::AppHandle, hash: &str) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // If another instance is already running and this is a `--play` shortcut
+    // launch, hand off to it and wait out the game session ourselves instead
+    // of building a whole second Tauri app just to have
+    // tauri_plugin_single_instance immediately forward-and-exit it — see
+    // `relay_play_to_running_instance` for why that matters for Steam.
+    #[cfg(windows)]
+    {
+        let argv: Vec<String> = std::env::args().collect();
+        if relay_play_to_running_instance(&argv) {
+            return;
+        }
+    }
+
     // Headless self-update check (no GUI): runs the update flow and exits. Must
     // happen before any Tauri setup so it works without a display.
     if self_update_check_requested() {
@@ -203,8 +331,9 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 show_main_window(&window);
-                let Some(state) = app.try_state::<AppState>() else { return };
-                discord::set_window_visible(state.inner(), true);
+                let Some(state) = app.try_state::<Arc<AppState>>() else { return };
+                let state: &Arc<AppState> = state.inner();
+                discord::set_window_visible(state, true);
 
                 // If the second instance was launched with --play <game>
                 // (i.e. a desktop shortcut), forward it to the already-running
@@ -217,6 +346,20 @@ pub fn run() {
                         "window.dispatchEvent(new CustomEvent('goopie:auto-play', {{ detail: {{ game: '{}' }} }}))",
                         game.replace('\\', "\\\\").replace('\'', "\\'"),
                     ));
+
+                    // This launch came through `relay_play_to_running_instance`
+                    // (Steam or another shortcut, while we're already running) —
+                    // watch its relay PID so that if Steam's "Close" button kills
+                    // it out from under us, we close the actual game too, rather
+                    // than leaving it running with Steam none the wiser.
+                    #[cfg(windows)]
+                    if let Some(pid) = parse_flag_arg(&argv, "--relay-pid").and_then(|s| s.parse::<u32>().ok()) {
+                        let state_clone = Arc::clone(state);
+                        std::thread::spawn(move || {
+                            wait_for_pid_exit(pid);
+                            bridge::kill_running_game_if_matches(&state_clone, &game);
+                        });
+                    }
                 }
             }
         }))
@@ -262,13 +405,13 @@ pub fn run() {
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "library" => {
                         navigate_and_show(app, "#/library");
-                        if let Some(state) = app.try_state::<AppState>() {
+                        if let Some(state) = app.try_state::<Arc<AppState>>() {
                             discord::set_window_visible(state.inner(), true);
                         }
                     }
                     "settings" => {
                         navigate_and_show(app, "#/settings");
-                        if let Some(state) = app.try_state::<AppState>() {
+                        if let Some(state) = app.try_state::<Arc<AppState>>() {
                             discord::set_window_visible(state.inner(), true);
                         }
                     }
@@ -279,7 +422,7 @@ pub fn run() {
                     if let TrayIconEvent::Click { button: tauri::tray::MouseButton::Left, button_state: tauri::tray::MouseButtonState::Up, .. } = event {
                         if let Some(window) = tray.app_handle().get_webview_window("main") {
                             show_main_window(&window);
-                            if let Some(state) = tray.app_handle().try_state::<AppState>() {
+                            if let Some(state) = tray.app_handle().try_state::<Arc<AppState>>() {
                                 discord::set_window_visible(state.inner(), true);
                             }
                         }
@@ -371,7 +514,7 @@ pub fn run() {
                     if config::get_collapse_to_tray() {
                         api.prevent_close();
                         let _ = window.hide();
-                        if let Some(state) = window.app_handle().try_state::<AppState>() {
+                        if let Some(state) = window.app_handle().try_state::<Arc<AppState>>() {
                             discord::set_window_visible(state.inner(), false);
                         }
                     }
