@@ -249,6 +249,7 @@ fn installed_ids(game: &str) -> Vec<String> {
         .flatten()
         .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
         .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| !name.starts_with('.'))
         .collect();
     ids.sort();
     ids
@@ -732,6 +733,7 @@ fn sanitize_mod_id(candidate: &str) -> String {
         .chars()
         .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '_' })
         .collect();
+    let sanitized = sanitized.trim_start_matches('.').to_string();
     if sanitized.is_empty() { "mod".to_string() } else { sanitized }
 }
 
