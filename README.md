@@ -84,3 +84,7 @@ Start the launcher in offline mode by using `--offline`.
 Games are stored under:
 - Windows: `%LOCALAPPDATA%\Goopie\Games\`
 - Linux: `~/.local/share/Goopie/Games/`
+
+## Credits
+
+- [VDFLib](https://github.com/Graine25/VDFLib) by Graine25: the Steam `shortcuts.vdf` binary format handling and shortcut-appid algorithm in `src-tauri/src/shortcuts.rs` are a Rust port of this library.

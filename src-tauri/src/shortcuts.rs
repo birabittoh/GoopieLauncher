@@ -346,6 +346,12 @@ pub fn remove_applications(game: &str, _title: &str) -> Result<(), String> {
 }
 
 // ── Steam shortcut (shortcuts.vdf) ─────────────────────────────────────────
+//
+// Binary VDF parsing/writing, the shortcut-appid algorithm, and the grid
+// artwork layout below are a Rust port of Graine25's VDFLib
+// (https://github.com/Graine25/VDFLib, MIT), written independently for this
+// project's own I/O and data model rather than binding to it directly.
+
 
 /// Binary VDF type markers used in Steam's shortcuts.vdf.
 const VDF_OBJECT: u8 = 0x00;
