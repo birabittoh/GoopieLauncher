@@ -18,6 +18,12 @@ pub struct LaunchSpec {
     pub args: Vec<String>,
     pub cwd: PathBuf,
     pub env: Vec<(String, String)>,
+    /// File name of the actual game executable (e.g. "Game.exe") — same as
+    /// `program`'s file name normally, but on Linux `program` is the Proton
+    /// wrapper script, so this instead names the Windows exe Wine actually
+    /// runs (and reports under in the process list) so restart-detection in
+    /// `bridge::monitor_running_game` looks for the right process.
+    pub exe_name: String,
 }
 
 // ── Path helpers ──────────────────────────────────────────────────────────────
@@ -792,7 +798,8 @@ pub fn resolve_launch(
     }
 
     let cwd = exe_path.parent().unwrap_or(&dir).to_path_buf();
-    Ok(LaunchSpec { program: exe_path, args, cwd, env: Vec::new() })
+    let exe_name = exe_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    Ok(LaunchSpec { program: exe_path, args, cwd, env: Vec::new(), exe_name })
 }
 
 /// Spawns the game and returns the child process along with its executable
@@ -801,7 +808,7 @@ pub fn resolve_launch(
 /// settings) as distinct from the player actually quitting.
 pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data_root: bool, mount_update: bool, cvar_types: &str) -> Result<(std::process::Child, String), String> {
     let spec = resolve_launch(game, build, cvar_args, custom_exe, set_data_root, mount_update, cvar_types)?;
-    let exe_name = spec.program.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let exe_name = spec.exe_name.clone();
 
     eprintln!(
         "[games] Launching: {} {:?}",
@@ -914,11 +921,14 @@ fn resolve_proton_launch(
         ("STEAM_COMPAT_CLIENT_INSTALL_PATH".to_string(), steam_compat_client),
     ];
 
+    let exe_name = exe_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+
     Ok(LaunchSpec {
         program: proton_script,
         args: proton_args,
         cwd: exe_dir.to_path_buf(),
         env,
+        exe_name,
     })
 }
 
