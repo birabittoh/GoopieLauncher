@@ -617,6 +617,7 @@ mod tests {
             build: "test".into(),
             child,
             started_at: Instant::now(),
+            exe_name: "sleep".into(),
         });
         assert!(game_is_running(&state), "tracked session ⇒ game running");
 

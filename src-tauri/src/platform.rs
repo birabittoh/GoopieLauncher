@@ -136,6 +136,58 @@ pub fn available_space(path: &str) -> u64 {
     fs4::available_space(&probe).unwrap_or(0)
 }
 
+/// Returns whether any process on the system currently has the given
+/// executable file name (e.g. "Game.exe"), matched case-insensitively.
+/// Used to tell a game restarting itself under a fresh PID — some titles do
+/// this to apply settings changes — apart from the player actually quitting;
+/// see `bridge::monitor_running_game`.
+pub fn is_process_running(exe_name: &str) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+        };
+
+        unsafe {
+            let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if snapshot == INVALID_HANDLE_VALUE {
+                return false;
+            }
+
+            let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+            entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+            let mut found = false;
+
+            if Process32FirstW(snapshot, &mut entry) != 0 {
+                loop {
+                    let len = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len());
+                    let name = String::from_utf16_lossy(&entry.szExeFile[..len]);
+                    if name.eq_ignore_ascii_case(exe_name) {
+                        found = true;
+                        break;
+                    }
+                    if Process32NextW(snapshot, &mut entry) == 0 {
+                        break;
+                    }
+                }
+            }
+
+            CloseHandle(snapshot);
+            found
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::process::Command::new("pgrep")
+            .arg("-x")
+            .arg(exe_name)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+}
+
 /// Show a native folder-picker dialog and return the selected path, or `None` if cancelled.
 pub fn pick_folder(title: &str) -> Option<String> {
     rfd::FileDialog::new()

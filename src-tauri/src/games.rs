@@ -795,8 +795,13 @@ pub fn resolve_launch(
     Ok(LaunchSpec { program: exe_path, args, cwd, env: Vec::new() })
 }
 
-pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data_root: bool, mount_update: bool, cvar_types: &str) -> Result<std::process::Child, String> {
+/// Spawns the game and returns the child process along with its executable
+/// file name (e.g. "Game.exe") — the latter lets callers recognize the game
+/// restarting itself under a fresh PID (some titles do this to apply
+/// settings) as distinct from the player actually quitting.
+pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data_root: bool, mount_update: bool, cvar_types: &str) -> Result<(std::process::Child, String), String> {
     let spec = resolve_launch(game, build, cvar_args, custom_exe, set_data_root, mount_update, cvar_types)?;
+    let exe_name = spec.program.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
 
     eprintln!(
         "[games] Launching: {} {:?}",
@@ -817,7 +822,7 @@ pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data
     match cmd.spawn() {
         Ok(child) => {
             eprintln!("[games] Process spawned successfully");
-            Ok(child)
+            Ok((child, exe_name))
         }
         Err(e) => {
             eprintln!("[games] Failed to spawn process: {}", e);

@@ -64,6 +64,9 @@ pub struct RunningGame {
     pub build: String,
     pub child: std::process::Child,
     pub started_at: Instant,
+    /// Executable file name (e.g. "Game.exe") the child was spawned from.
+    /// Used to recognize a self-restart (see `monitor_running_game`).
+    pub exe_name: String,
 }
 
 /// Path to a per-game marker file that exists for exactly as long as `game`
@@ -270,8 +273,8 @@ fn launch_and_track(state: &Arc<AppState>, game: String, build: String, cvar_arg
     let title_id = if title_id.is_empty() { None } else { Some(title_id.as_str()) };
     leaderboards::merge_all_for_launch(&game, title_id);
 
-    let child = match games::play(&game, &build, &cvar_args, &custom_exe, set_data_root, mount_update, &cvar_types) {
-        Ok(child) => child,
+    let (child, exe_name) = match games::play(&game, &build, &cvar_args, &custom_exe, set_data_root, mount_update, &cvar_types) {
+        Ok(result) => result,
         Err(msg) => {
             // Launch never actually started — undo the merge immediately
             // instead of leaving it stuck until some future successful launch.
@@ -294,6 +297,7 @@ fn launch_and_track(state: &Arc<AppState>, game: String, build: String, cvar_arg
         build,
         child,
         started_at: Instant::now(),
+        exe_name,
     });
 
     // Collapse to the tray while the game runs — only when both settings are
@@ -311,6 +315,15 @@ fn launch_and_track(state: &Arc<AppState>, game: String, build: String, cvar_arg
     std::thread::spawn(move || monitor_running_game(state_clone, session_id));
 }
 
+/// How long, after the tracked child process exits, to keep checking for a
+/// same-named process before declaring the game actually closed. Some games
+/// restart themselves under a fresh PID to apply settings changes — without
+/// this grace window that looks identical to the player quitting, which
+/// would wrongly end the session (stop playtime tracking, restore the
+/// window, etc.) mid-restart.
+const RESTART_GRACE_POLL_INTERVAL: Duration = Duration::from_millis(500);
+const RESTART_GRACE_POLLS: u32 = 10; // 5s total
+
 /// Poll the tracked process until it exits, then clear `running_game` — but
 /// only if it's still *our* session (the user may have closed it to launch a
 /// different game in the meantime, in which case that swap already cleared/
@@ -326,6 +339,44 @@ fn monitor_running_game(state: Arc<AppState>, session_id: u64) {
         }
         match running.child.try_wait() {
             Ok(Some(_status)) => {
+                let exe_name = running.exe_name.clone();
+                drop(lock);
+
+                if !exe_name.is_empty() {
+                    let mut restarted = false;
+                    for _ in 0..RESTART_GRACE_POLLS {
+                        std::thread::sleep(RESTART_GRACE_POLL_INTERVAL);
+                        if platform::is_process_running(&exe_name) {
+                            restarted = true;
+                            break;
+                        }
+                    }
+                    if restarted {
+                        // Keep the session alive by name until the
+                        // restarted process itself disappears — the
+                        // original `Child` handle is already reaped and
+                        // can't be waited on again.
+                        loop {
+                            {
+                                let lock = state.running_game.lock().unwrap();
+                                match lock.as_ref() {
+                                    Some(r) if r.session_id == session_id => {}
+                                    _ => return,
+                                }
+                            }
+                            if !platform::is_process_running(&exe_name) {
+                                break;
+                            }
+                            std::thread::sleep(Duration::from_millis(750));
+                        }
+                    }
+                }
+
+                let mut lock = state.running_game.lock().unwrap();
+                let Some(running) = lock.as_ref() else { return };
+                if running.session_id != session_id {
+                    return;
+                }
                 playtime::record_session(&running.game, running.started_at.elapsed().as_secs());
                 let game = running.game.clone();
                 unmark_game_running(&game);

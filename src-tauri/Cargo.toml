@@ -84,4 +84,4 @@ tauri-plugin-single-instance = "2.4.3"
 winreg        = "0.52"
 junction      = "1"
 mslnk         = "0.1"
-windows-sys   = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_DataExchange", "Win32_UI_WindowsAndMessaging"] }
+windows-sys   = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_DataExchange", "Win32_UI_WindowsAndMessaging", "Win32_System_Diagnostics_ToolHelp"] }
