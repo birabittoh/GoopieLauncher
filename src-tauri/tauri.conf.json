@@ -1,7 +1,7 @@
 {
   "$schema": "./gen/schemas/desktop-schema.json",
   "productName": "Goopie Launcher",
-  "version": "1.7.6",
+  "version": "1.7.7",
   "identifier": "xyz.goopie.launcher",
   "build": {
     "frontendDist": "../dist",
