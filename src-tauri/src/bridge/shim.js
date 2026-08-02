@@ -36,6 +36,31 @@
     }
   }
 
+  /**
+   * Same as `call`, but sends `args` as the POST body instead of a URL query
+   * parameter. `call`'s GET form silently fails (net::ERR_FAILED, no error
+   * surfaced beyond a console warning) once the JSON-encoded args exceed the
+   * webview's URL length ceiling (a few KB) — e.g. `setCachedGamesData` with
+   * the full games catalogue easily reaches hundreds of KB. Use this for any
+   * bridge call whose payload isn't bounded to a small size.
+   */
+  function callPost(fn_name, args) {
+    var xhr = new XMLHttpRequest();
+    var url = BASE + encodeURIComponent(fn_name) + '?token=' + TOKEN;
+    try {
+      xhr.open('POST', url, false /* synchronous */);
+      xhr.send(JSON.stringify(args));
+      if (xhr.status === 200) {
+        return JSON.parse(xhr.responseText);
+      }
+      console.warn('[GoopieLauncher] bridge error for ' + fn_name + ': HTTP ' + xhr.status + ' – ' + xhr.responseText);
+      return null;
+    } catch (e) {
+      console.warn('[GoopieLauncher] bridge XHR exception for ' + fn_name + ':', e);
+      return null;
+    }
+  }
+
   // ── Platform ─────────────────────────────────────────────────────────────────
   window.GetPlatform     = function ()    { return call('GetPlatform', []); };
   window.GetArch         = function ()    { return call('GetArch', []); };
@@ -261,7 +286,7 @@
   // ── Game-data disk cache (offline fallback) ──────────────────────────────────
   // Shape: `{ lastUpdated: <ISO-8601 string>, games: Game[] }`.
   window.getCachedGamesData = function ()     { return call('getCachedGamesData', []); };
-  window.setCachedGamesData = function (data) { return call('setCachedGamesData', [data]); };
+  window.setCachedGamesData = function (data) { return callPost('setCachedGamesData', [data]); };
 
   // ── Misc ─────────────────────────────────────────────────────────────────────
   window.testFunction     = function (s)      { return call('testFunction', [s]); };

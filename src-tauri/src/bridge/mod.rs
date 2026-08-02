@@ -497,6 +497,12 @@ pub fn make_init_script(token: &str) -> String {
 /// Expected request URI:
 ///   `goopiebridge://localhost/bridge/<Fn>?token=<secret>&args=<json>`  (Linux/macOS)
 ///   `http://goopiebridge.localhost/bridge/<Fn>?token=<secret>&args=<json>` (Windows)
+///
+/// `args` normally travels in the query string, but a GET URL has a practical
+/// length ceiling (a few KB, enforced by the OS/webview's HTTP stack) that the
+/// full games catalogue blows past — see `setCachedGamesData`. For a POST
+/// request, `args` is instead read from the request body verbatim as a JSON
+/// array, sidestepping the URL length limit entirely.
 pub fn handle_bridge_request(
     state: &Arc<AppState>,
     request: tauri::http::Request<Vec<u8>>,
@@ -516,8 +522,12 @@ pub fn handle_bridge_request(
         return resp(403, "null");
     }
 
-    let args_str = params.get("args").cloned().unwrap_or_else(|| "[]".into());
-    let args: Vec<serde_json::Value> = serde_json::from_str(&args_str).unwrap_or_default();
+    let args: Vec<serde_json::Value> = if request.method() == "POST" {
+        serde_json::from_slice(request.body()).unwrap_or_default()
+    } else {
+        let args_str = params.get("args").cloned().unwrap_or_else(|| "[]".into());
+        serde_json::from_str(&args_str).unwrap_or_default()
+    };
 
     let result = dispatch(&fn_name, args, state);
     let body = serde_json::to_string(&result).unwrap_or_else(|_| "null".into());
