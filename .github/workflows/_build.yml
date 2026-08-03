@@ -269,6 +269,20 @@ jobs:
             > "$HOOK_DIR/00-goopie-webkit-libpath.hook"
           chmod +x "$HOOK_DIR/00-goopie-webkit-libpath.hook"
 
+          # quick-sharun bundles GIO's GnuTLS backend module
+          # (lib/gio/modules/libgiognutls.so, needed for HTTPS requests) but
+          # nothing tells GIO to look in $APPDIR/lib/gio/modules for it — GIO
+          # only searches its own compiled-in default module directory
+          # (a path baked into the bundled libgio-2.0.so.0 at its own build
+          # time), which doesn't exist on the running host. Without a TLS
+          # backend, WebKitNetworkProcess can't make HTTPS requests at all,
+          # so the window loads blank with a "TLS support is not available"
+          # warning — reproduced by hand: unset, the warning fires; with
+          # GIO_EXTRA_MODULES pointed at the bundled dir, it doesn't.
+          printf '%s\n' 'export GIO_EXTRA_MODULES="$APPDIR"/lib/gio/modules' \
+            > "$HOOK_DIR/00-goopie-gio-modules.hook"
+          chmod +x "$HOOK_DIR/00-goopie-gio-modules.hook"
+
           for BIN in $WEBKIT_BINS; do
             patchelf --set-interpreter "/tmp/$WEBKIT_LIB_TOKEN/ld-linux-x86-64.so.2" "$BIN"
             patchelf --force-rpath --set-rpath '$ORIGIN/..' "$BIN"
