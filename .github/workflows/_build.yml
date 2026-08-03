@@ -274,6 +274,32 @@ jobs:
             patchelf --force-rpath --set-rpath '$ORIGIN/..' "$BIN"
           done
 
+          # bin/goopie-launcher itself has the exact same problem as the
+          # WebKit*Process helpers above: it carries neither an RPATH nor a
+          # patched interpreter, so it depends entirely on AppRun launching
+          # it through the bundled loader with $APPDIR/lib on the library
+          # path. AppRun.sh (fetched unpinned from upstream quick-sharun, see
+          # the block comment above) no longer does that — it just execs the
+          # binary directly — so on any host that doesn't already have a
+          # matching system libwebkit2gtk-4.1 (Steam Deck, most non-Ubuntu
+          # distros) the launcher fails immediately with "cannot open shared
+          # object file: libwebkit2gtk-4.1.so.0". This previously went
+          # unnoticed because GitHub's ubuntu-24.04 runner happens to already
+          # have compatible system libs, so the host loader "accidentally"
+          # resolved everything even without any of this bundle-aware
+          # patching. Fix it the same way as the WebKit helpers: point
+          # PT_INTERP at the bundled loader (via the same stable /tmp token)
+          # and give it an RPATH back to $APPDIR/lib, so it no longer depends
+          # on how AppRun happens to invoke it.
+          MAIN_BIN="$(find -H squashfs-root/bin -maxdepth 1 -type f -name goopie-launcher | head -1)"
+          if [ -z "$MAIN_BIN" ]; then
+            echo "::error::Could not find bin/goopie-launcher under squashfs-root; full tree:"
+            find -H squashfs-root
+            exit 1
+          fi
+          patchelf --set-interpreter "/tmp/$WEBKIT_LIB_TOKEN/ld-linux-x86-64.so.2" "$MAIN_BIN"
+          patchelf --force-rpath --set-rpath '$ORIGIN/../lib' "$MAIN_BIN"
+
           ARCH="$(uname -m)"
           APPIMAGETOOL="$RUNNER_TEMP/appimagetool"
           if [ ! -x "$APPIMAGETOOL" ]; then
