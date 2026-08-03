@@ -83,8 +83,14 @@ jobs:
             pkg-config
 
       # ── Tauri CLI ──────────────────────────────────────────────────────────
+      # Pinned to a specific commit on the feat/truly-portable-appimage
+      # branch (rather than tracking the branch tip) so upstream pushes
+      # can't silently change the build — that's exactly how AppRun.sh
+      # regressed and broke every AppImage on hosts without system
+      # webkit2gtk (Steam Deck etc.) without a single line changing here.
+      # Bump deliberately and re-test when picking up upstream fixes.
       - name: Install Tauri CLI (truly-portable-appimage branch)
-        run: cargo install tauri-cli --git https://github.com/tauri-apps/tauri --branch feat/truly-portable-appimage --locked
+        run: cargo install tauri-cli --git https://github.com/tauri-apps/tauri --rev 503bdbc1eade37d50a64ea7f81dbe853338b7fda --locked
 
       # ── Pre-built website (when provided by the caller) ────────────────────
       - name: Download pre-built offline site
@@ -314,10 +320,15 @@ jobs:
           patchelf --set-interpreter "/tmp/$WEBKIT_LIB_TOKEN/ld-linux-x86-64.so.2" "$MAIN_BIN"
           patchelf --force-rpath --set-rpath '$ORIGIN/../lib' "$MAIN_BIN"
 
+          # Pinned to a specific release (not /releases/latest) for the same
+          # reason the Tauri CLI install above is pinned to a commit — an
+          # upstream appimagetool release could otherwise silently change
+          # how the AppImage gets repacked. Bump deliberately and re-test.
           ARCH="$(uname -m)"
+          APPIMAGETOOL_VERSION="0.3.2"
           APPIMAGETOOL="$RUNNER_TEMP/appimagetool"
           if [ ! -x "$APPIMAGETOOL" ]; then
-            curl -Lso "$APPIMAGETOOL" "https://github.com/pkgforge-dev/appimagetool/releases/latest/download/appimagetool-${ARCH}-linux"
+            curl -Lso "$APPIMAGETOOL" "https://github.com/pkgforge-dev/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-${ARCH}-linux"
             chmod +x "$APPIMAGETOOL"
           fi
 
