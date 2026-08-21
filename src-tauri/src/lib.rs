@@ -254,6 +254,7 @@ pub(crate) fn show_main_window(window: &tauri::WebviewWindow) {
     let _ = window.show();
     let _ = window.unminimize();
     let _ = window.set_focus();
+    let _ = window.eval("window.dispatchEvent(new CustomEvent('goopie:window-shown'))");
 }
 
 /// Restore the main window from the tray and jump the website to `hash`
@@ -514,6 +515,12 @@ pub fn run() {
                 WindowEvent::CloseRequested { api, .. } => {
                     if config::get_collapse_to_tray() {
                         api.prevent_close();
+                        // Stop any background media (e.g. YouTube audio) before hiding —
+                        // a hidden window otherwise keeps playing silently, and on Linux
+                        // that also leaves it controllable/visible via MPRIS.
+                        for webview in window.webviews() {
+                            let _ = webview.eval("window.dispatchEvent(new CustomEvent('goopie:window-hidden'))");
+                        }
                         let _ = window.hide();
                         if let Some(state) = window.app_handle().try_state::<Arc<AppState>>() {
                             discord::set_window_visible(state.inner(), false);
