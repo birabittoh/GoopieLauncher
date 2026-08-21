@@ -285,9 +285,71 @@ jobs:
           # so the window loads blank with a "TLS support is not available"
           # warning — reproduced by hand: unset, the warning fires; with
           # GIO_EXTRA_MODULES pointed at the bundled dir, it doesn't.
-          printf '%s\n' 'export GIO_EXTRA_MODULES="$APPDIR"/lib/gio/modules' \
+          #
+          # GIO_MODULE_DIR (not GIO_EXTRA_MODULES) is used here: _EXTRA_MODULES
+          # only *adds* the bundled dir as an extra search path, it doesn't stop
+          # GIO from also still scanning its compiled-in default host directory
+          # (/usr/lib/<arch>/gio/modules). That's a problem because GIO dlopens
+          # every module it finds there, unconditionally, at startup — including
+          # ones the launcher never uses (network-proxy detection, gvfs). Those
+          # host modules are compiled against whatever GLib the *host* currently
+          # has; the bundled GTK/GLib loaded via RPATH is a different, frozen
+          # version, so a host update (e.g. PikaOS bumping glib/gvfs) can leave
+          # them ABI-incompatible with the bundled GLib actually in the process
+          # ("undefined symbol: g_variant_builder_init_static" from
+          # libgvfscommon.so, "Failed to load module: libgiolibproxy.so") and
+          # take the whole process down. GIO_MODULE_DIR fully replaces the
+          # search path instead of adding to it, so only the modules quick-sharun
+          # actually bundled (matching the bundled GLib) ever get loaded.
+          printf '%s\n' 'export GIO_MODULE_DIR="$APPDIR"/lib/gio/modules' \
             > "$HOOK_DIR/00-goopie-gio-modules.hook"
           chmod +x "$HOOK_DIR/00-goopie-gio-modules.hook"
+
+          # Same class of bug, different subsystem: gdk-pixbuf loaders (used to
+          # render icons, including GTK's own icon-theme fallback icons) are
+          # dlopen'd by module name from a directory path baked into the
+          # bundled libgdk_pixbuf-2.0.so.0 at its own build time
+          # (/usr/lib/<arch>/gdk-pixbuf-2.0/2.10.0/loaders on the CI runner).
+          # Like the GIO modules above, quick-sharun doesn't bundle these
+          # (dlopen'd, not a regular ELF dependency, so invisible to the ldd
+          # scan), so at runtime the bundled gdk-pixbuf reaches out to the
+          # *host's* loader directory and dlopens whatever it finds there.
+          # After a host update those loaders (e.g. the SVG loader, which
+          # wraps librsvg) can be linked against a librsvg/glib ABI the
+          # bundled gdk-pixbuf doesn't match — "undefined symbol:
+          # rsvg_handle_get_pixbuf_and_error" — which GTK's icon helper
+          # (gtkiconhelper.c) treats as a fatal GError and aborts the process.
+          # Fix: bundle the loaders themselves plus a loaders.cache generated
+          # against them, and point GDK_PIXBUF_MODULE_FILE at the bundled
+          # cache so gdk-pixbuf never consults the host directory at all.
+          # The cache stores absolute paths to each loader .so, resolved at
+          # cache-generation time — since that's a build-time path that won't
+          # exist at run time, rewrite it to the same stable /tmp token used
+          # for PT_INTERP above (backed by the ln -sfn hook), which always
+          # resolves to $APPDIR/lib regardless of where the AppImage mounts.
+          PIXBUF_LOADER_DIR="$(find "/usr/lib/$MULTIARCH" "/lib/$MULTIARCH" -type d -path '*gdk-pixbuf-2.0/*/loaders' 2>/dev/null | head -1)"
+          if [ -z "$PIXBUF_LOADER_DIR" ]; then
+            echo "::error::Could not find a gdk-pixbuf loaders directory on the host to bundle"
+            exit 1
+          fi
+          PIXBUF_VERSION_DIR="$(basename "$(dirname "$PIXBUF_LOADER_DIR")")"
+          BUNDLED_PIXBUF_DIR="$LIBDIR/gdk-pixbuf-2.0/$PIXBUF_VERSION_DIR/loaders"
+          mkdir -p "$BUNDLED_PIXBUF_DIR"
+          cp -L "$PIXBUF_LOADER_DIR"/*.so "$BUNDLED_PIXBUF_DIR/"
+
+          GDK_PIXBUF_QUERY_LOADERS="$(command -v gdk-pixbuf-query-loaders || find "/usr/lib/$MULTIARCH" "/usr/bin" -maxdepth 3 -name 'gdk-pixbuf-query-loaders*' 2>/dev/null | head -1)"
+          if [ -z "$GDK_PIXBUF_QUERY_LOADERS" ]; then
+            echo "::error::Could not find gdk-pixbuf-query-loaders on the host runner"
+            exit 1
+          fi
+          RUNTIME_PIXBUF_DIR="/tmp/$WEBKIT_LIB_TOKEN/gdk-pixbuf-2.0/$PIXBUF_VERSION_DIR/loaders"
+          "$GDK_PIXBUF_QUERY_LOADERS" "$BUNDLED_PIXBUF_DIR"/*.so \
+            | sed "s|$BUNDLED_PIXBUF_DIR|$RUNTIME_PIXBUF_DIR|g" \
+            > "$BUNDLED_PIXBUF_DIR/../loaders.cache"
+
+          printf '%s\n' 'export GDK_PIXBUF_MODULE_FILE="$APPDIR"'"/lib/gdk-pixbuf-2.0/$PIXBUF_VERSION_DIR/loaders.cache" \
+            > "$HOOK_DIR/00-goopie-pixbuf-loaders.hook"
+          chmod +x "$HOOK_DIR/00-goopie-pixbuf-loaders.hook"
 
           for BIN in $WEBKIT_BINS; do
             patchelf --set-interpreter "/tmp/$WEBKIT_LIB_TOKEN/ld-linux-x86-64.so.2" "$BIN"
