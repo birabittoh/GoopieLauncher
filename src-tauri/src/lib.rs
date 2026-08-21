@@ -10,6 +10,7 @@ mod drive;
 mod download;
 mod games;
 mod extract;
+mod image_cache;
 mod mods;
 mod offline_site;
 mod paths;
@@ -373,6 +374,10 @@ pub fn run() {
         // Serves the embedded offline copy of GoopieWebsite (see offline_site.rs).
         .register_uri_scheme_protocol("goopieoffline", |_ctx, request| {
             offline_site::handle_offline_request(request)
+        })
+        // Serves disk-cached game cover/header/title images (see image_cache.rs).
+        .register_uri_scheme_protocol("goopieimg", |_ctx, request| {
+            image_cache::handle_image_request(request)
         })
         .setup(move |app| {
             let url = WebviewUrl::External(url_str.parse().expect("invalid launcher URL"));

@@ -73,6 +73,18 @@ pub fn cloud_saves_file() -> PathBuf {
     base.join("cloud-saves.json")
 }
 
+/// Directory holding disk-cached game images (covers, headers, title/logo
+/// art) fetched through the `goopieimg` custom URI scheme — see
+/// `image_cache.rs`. Lives next to `games_cache_file()` in the same `Goopie`
+/// app-data folder, in its own subdirectory since it can hold many files.
+pub fn image_cache_dir() -> PathBuf {
+    let base = directories::BaseDirs::new()
+        .map(|d| d.data_local_dir().join("Goopie").join("image-cache"))
+        .unwrap_or_else(|| PathBuf::from("image-cache"));
+    let _ = std::fs::create_dir_all(&base);
+    base
+}
+
 /// Documents directory.
 ///
 /// Mirrors the C++ launcher's `GetDocumentsPath_()`: prefer the user-configured

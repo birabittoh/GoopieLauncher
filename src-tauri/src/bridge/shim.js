@@ -11,6 +11,9 @@
   // blocking when the page is served over HTTPS.
   var BASE = '__BRIDGE_BASE__';
   var TOKEN = '__BRIDGE_TOKEN__';
+  // __IMAGE_BASE__ is substituted at runtime by make_init_script() the same
+  // way BASE is — see image_cache::image_base_url().
+  var IMAGE_BASE = '__IMAGE_BASE__';
 
   /**
    * Make a synchronous call to the Rust bridge.
@@ -207,6 +210,15 @@
   window.clearExtractError   = function ()    { return call('clearExtractError', []); };
   window.getDownloadError    = function ()    { return call('getDownloadError', []); };
   window.clearDownloadError  = function ()    { return call('clearDownloadError', []); };
+
+  // ── Image caching ────────────────────────────────────────────────────────────
+  // Rewrites a remote image URL (cover art, header/title images) to one served
+  // through the goopieimg:// cache: served from disk if already downloaded,
+  // otherwise fetched once and cached for offline use afterwards.
+  window.getCachedImageUrl = function (url) {
+    if (!url || (url.indexOf('http://') !== 0 && url.indexOf('https://') !== 0)) return url;
+    return IMAGE_BASE + '?url=' + encodeURIComponent(url);
+  };
 
   // ── Folder operations ────────────────────────────────────────────────────────
   window.OpenGamesFolder  = function ()       { return call('OpenGamesFolder', []); };

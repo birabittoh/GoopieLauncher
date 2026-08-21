@@ -494,6 +494,7 @@ pub fn make_init_script(token: &str) -> String {
     let shim = include_str!("shim.js");
     shim.replace("__BRIDGE_BASE__", base)
         .replace("__BRIDGE_TOKEN__", token)
+        .replace("__IMAGE_BASE__", crate::image_cache::image_base_url())
 }
 
 // ── Custom URI scheme request handler ────────────────────────────────────────
