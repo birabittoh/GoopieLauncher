@@ -35,6 +35,26 @@ fn releases_api_url() -> Option<String> {
     option_env!("GOOPIE_RELEASES_API").map(|s| s.to_string())
 }
 
+/// Whether the in-place self-updater is disabled.
+///
+/// Unlike `GOOPIE_RELEASES_API`, this is read from the environment at
+/// *runtime* in every build (release included) — there's no redirection risk
+/// in an env var that only ever turns the updater *off*, so there's no need
+/// to force a rebuild just to set it. Intended for third-party packagers
+/// (distro packages, AppImage-adjacent repackagers, etc.) whose package
+/// manager already owns versioning/updates for the binary: they can wrap the
+/// existing shipped binary (e.g. set it in the `.desktop` file / wrapper
+/// script / systemd unit that launches it) instead of rebuilding from source.
+///
+/// When set, no periodic update check ever runs (so the "update available"
+/// icon never lights up) and `self_update`/`run_self_update_check` are no-ops.
+pub fn updates_disabled() -> bool {
+    match std::env::var("GOOPIE_DISABLE_UPDATER") {
+        Ok(v) => !v.is_empty() && v != "0",
+        Err(_) => false,
+    }
+}
+
 /// Spawns a background thread that checks `GOOPIE_RELEASES_API` for a newer
 /// launcher release every hour, caching the result in `AppState` so the
 /// (synchronous) `CheckForLauncherUpdate` bridge call never blocks on a
@@ -50,6 +70,11 @@ fn releases_api_url() -> Option<String> {
 /// in via `SelfUpdateLauncher`. The one exception is the hidden `AutoApplyUpdate`
 /// setting: when enabled, each live check auto-applies via `maybe_auto_apply`.
 pub fn spawn_update_monitor(state: Arc<AppState>) {
+    if updates_disabled() {
+        eprintln!("[launcher] updater disabled at build time (GOOPIE_DISABLE_UPDATER); skipping");
+        return;
+    }
+
     // `LastUpdateCheck`/`LastKnownReleaseTag` persist across restarts, but
     // `AppState`'s cache doesn't — without this, a restart inside the throttle
     // window below would leave `update_checked` false (and the "update
@@ -142,6 +167,9 @@ fn check_for_update(state: &Arc<AppState>) {
 /// `check_for_update`, so it refreshes exactly the same cache the monitor does
 /// (including re-stamping the throttle timestamp on success).
 pub fn recheck_now(state: Arc<AppState>) {
+    if updates_disabled() {
+        return;
+    }
     state.update_checking.store(true, Ordering::Relaxed);
     check_for_update(&state);
     state.update_checking.store(false, Ordering::Relaxed);
@@ -210,6 +238,11 @@ pub(crate) fn auto_apply_after_game_exit(state: &Arc<AppState>) {
 /// (The `applied` success case exits `0` from inside `apply_update`; the harness
 /// confirms it by the replaced binary on disk, not this code path.)
 pub fn run_self_update_check() -> ! {
+    if updates_disabled() {
+        println!("SELFUPDATE: disabled");
+        std::process::exit(11);
+    }
+
     let state = Arc::new(AppState::new());
     check_for_update(&state);
 
@@ -228,6 +261,10 @@ pub fn run_self_update_check() -> ! {
 }
 
 pub fn self_update(state: Arc<AppState>) {
+    if updates_disabled() {
+        eprintln!("[launcher] updater disabled at build time (GOOPIE_DISABLE_UPDATER); refusing to self-update");
+        return;
+    }
     let Some(api_url) = releases_api_url() else {
         eprintln!("[launcher] no releases API configured; cannot self-update");
         return;

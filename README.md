@@ -85,6 +85,16 @@ Games are stored under:
 - Windows: `%LOCALAPPDATA%\Goopie\Games\`
 - Linux: `~/.local/share/Goopie/Games/`
 
+## Packaging
+
+This launcher normally updates in place as soon as it detects a new version has been published on GitHub.
+
+If you want to handle updates on your own, just start it with the `GOOPIE_DISABLE_UPDATER` env var set to `1`.
+For example, in a `.desktop` file:
+```
+Exec=env GOOPIE_DISABLE_UPDATER=1 /opt/goopielauncher/goopie-launcher
+```
+
 ## Credits
 
 - [VDFLib](https://github.com/Graine25/VDFLib) by Graine25: the Steam `shortcuts.vdf` binary format handling and shortcut-appid algorithm in `src-tauri/src/shortcuts.rs` are a Rust port of this library.
