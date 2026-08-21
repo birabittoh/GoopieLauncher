@@ -336,6 +336,15 @@ jobs:
           BUNDLED_PIXBUF_DIR="$LIBDIR/gdk-pixbuf-2.0/$PIXBUF_VERSION_DIR/loaders"
           mkdir -p "$BUNDLED_PIXBUF_DIR"
           cp -L "$PIXBUF_LOADER_DIR"/*.so "$BUNDLED_PIXBUF_DIR/"
+          # LIBDIR (and so BUNDLED_PIXBUF_DIR) comes from a `find squashfs-root`
+          # relative to $WORKDIR, so it's a relative path at this point.
+          # gdk-pixbuf-query-loaders resolves relative args against its cwd and
+          # writes that resolved absolute path into loaders.cache — the sed
+          # below only matches the literal $BUNDLED_PIXBUF_DIR string, so a
+          # relative value leaves the cwd prefix behind unreplaced instead of
+          # being rewritten to $RUNTIME_PIXBUF_DIR. Canonicalize to absolute
+          # first so the sed pattern matches the whole path query-loaders emits.
+          BUNDLED_PIXBUF_DIR="$(cd "$BUNDLED_PIXBUF_DIR" && pwd)"
 
           GDK_PIXBUF_QUERY_LOADERS="$(command -v gdk-pixbuf-query-loaders || find "/usr/lib/$MULTIARCH" "/usr/bin" -maxdepth 3 -name 'gdk-pixbuf-query-loaders*' 2>/dev/null | head -1)"
           if [ -z "$GDK_PIXBUF_QUERY_LOADERS" ]; then
