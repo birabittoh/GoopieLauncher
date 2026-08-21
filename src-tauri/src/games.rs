@@ -566,6 +566,7 @@ pub fn update(
         Some(&progress_cb),
     ) {
         eprintln!("[games] Update download failed: {}", e);
+        *state.last_download_error.lock().unwrap() = Some(e.to_string());
         state.finish_download();
         return;
     }

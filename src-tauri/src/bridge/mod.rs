@@ -148,6 +148,11 @@ pub struct AppState {
     /// channel the frontend uses to surface the failure (see `getLaunchError`).
     pub last_launch_error: Mutex<Option<String>>,
     pub last_extract_error: Mutex<Option<String>>,
+    /// Human-readable error from the most recent asset download (game update,
+    /// DLC, or package) that failed, e.g. because the launcher is offline.
+    /// Polled by the frontend via `getDownloadError` and cleared on read, same
+    /// pattern as `last_extract_error`.
+    pub last_download_error: Mutex<Option<String>>,
     /// Result of the most recent `ProcessDrops` batch (global drag-and-drop),
     /// polled by the frontend via `getDropReport` and cleared on read.
     pub drop_report: Mutex<Option<extract::drop::DropReport>>,
@@ -197,6 +202,7 @@ impl AppState {
             update_checking: AtomicBool::new(false),
             last_launch_error: Mutex::new(None),
             last_extract_error: Mutex::new(None),
+            last_download_error: Mutex::new(None),
             drop_report: Mutex::new(None),
             drop_status: Mutex::new(String::new()),
             auto_play_game: Mutex::new(None),
@@ -1030,6 +1036,16 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
         }
         "clearExtractError" => {
             *state.last_extract_error.lock().unwrap() = None;
+            Value::Null
+        }
+        "getDownloadError" => {
+            match state.last_download_error.lock().unwrap().take() {
+                Some(msg) => json!(msg),
+                None => Value::Null,
+            }
+        }
+        "clearDownloadError" => {
+            *state.last_download_error.lock().unwrap() = None;
             Value::Null
         }
 

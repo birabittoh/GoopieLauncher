@@ -205,6 +205,8 @@
   window.getExtractProgress  = function ()    { return call('getExtractProgress', []); };
   window.getExtractError     = function ()    { return call('getExtractError', []); };
   window.clearExtractError   = function ()    { return call('clearExtractError', []); };
+  window.getDownloadError    = function ()    { return call('getDownloadError', []); };
+  window.clearDownloadError  = function ()    { return call('clearDownloadError', []); };
 
   // ── Folder operations ────────────────────────────────────────────────────────
   window.OpenGamesFolder  = function ()       { return call('OpenGamesFolder', []); };
