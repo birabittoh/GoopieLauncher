@@ -19,6 +19,7 @@ FILES = {
     "Cargo.toml": ROOT / "src-tauri" / "Cargo.toml",
     "Cargo.lock": ROOT / "src-tauri" / "Cargo.lock",
     "tauri.conf.json": ROOT / "src-tauri" / "tauri.conf.json",
+    "metainfo.xml": ROOT / "packaging" / "flatpak" / "xyz.goopie.launcher.metainfo.xml",
 }
 
 # Matches the goopie-launcher package entry in Cargo.lock:
@@ -49,6 +50,12 @@ def read_versions() -> dict[str, str]:
 
     raw = (FILES["tauri.conf.json"]).read_text()
     versions["tauri.conf.json"] = json.loads(raw)["version"]
+
+    if FILES["metainfo.xml"].exists():
+        raw = (FILES["metainfo.xml"]).read_text(encoding="utf-8")
+        m = re.search(r'<release\s+version="([^"]+)"', raw)
+        if m:
+            versions["metainfo.xml"] = m.group(1)
 
     return versions
 
@@ -96,6 +103,27 @@ def write_version(new: str) -> None:
     data = json.loads(path.read_text())
     data["version"] = new
     path.write_text(json.dumps(data, indent=2) + "\n")
+
+    # metainfo.xml
+    path = FILES["metainfo.xml"]
+    if path.exists():
+        import datetime
+        today = datetime.date.today().isoformat()
+        content = path.read_text(encoding="utf-8")
+        new_entry = (
+            f'    <release version="{new}" date="{today}">\n'
+            f'      <description>\n'
+            f'        <p>Release {new}.</p>\n'
+            f'      </description>\n'
+            f'    </release>\n'
+        )
+        content = re.sub(
+            r'(<releases>\s*\n)',
+            rf'\g<1>{new_entry}',
+            content,
+            count=1,
+        )
+        path.write_text(content, encoding="utf-8")
 
 
 def confirm(prompt: str) -> bool:
