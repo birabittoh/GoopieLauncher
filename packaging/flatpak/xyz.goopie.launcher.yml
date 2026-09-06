@@ -1,0 +1,60 @@
+app-id: xyz.goopie.launcher
+runtime: org.gnome.Platform
+runtime-version: '47'
+sdk: org.gnome.Sdk
+command: goopie-launcher
+
+finish-args:
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --socket=pulseaudio
+  - --device=dri
+  - --share=ipc
+  - --share=network
+  - --filesystem=home
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --talk-name=org.freedesktop.Notifications
+  - --filesystem=xdg-run/discord-ipc-0
+  - --env=GOOPIE_DISABLE_UPDATER=1
+
+modules:
+  - name: goopie-launcher
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 goopie-launcher /app/bin/goopie-launcher
+      - install -Dm644 xyz.goopie.launcher.desktop /app/share/applications/xyz.goopie.launcher.desktop
+      - install -Dm644 xyz.goopie.launcher.metainfo.xml /app/share/metainfo/xyz.goopie.launcher.metainfo.xml
+      - install -Dm644 icons/icon_256x256.png /app/share/icons/hicolor/256x256/apps/xyz.goopie.launcher.png
+      - install -Dm644 icons/icon_128x128.png /app/share/icons/hicolor/128x128/apps/xyz.goopie.launcher.png
+      - install -Dm644 icons/icon_64x64.png /app/share/icons/hicolor/64x64/apps/xyz.goopie.launcher.png
+      - install -Dm644 icons/icon_48x48.png /app/share/icons/hicolor/48x48/apps/xyz.goopie.launcher.png
+      - install -Dm644 icons/icon_32x32.png /app/share/icons/hicolor/32x32/apps/xyz.goopie.launcher.png
+      - install -Dm644 icons/icon_16x16.png /app/share/icons/hicolor/16x16/apps/xyz.goopie.launcher.png
+    sources:
+      - type: file
+        only-arches:
+          - x86_64
+        url: https://github.com/birabittoh/GoopieLauncher/releases/download/v1.8.0/Goopie-Launcher-linux-x86_64
+        sha256: b956ea953dd78f52ef7653807e470e208a3367516c2894977d0dce2138016387
+        dest-filename: goopie-launcher
+        x-checker-data:
+          type: github-releases
+          repository: birabittoh/GoopieLauncher
+          url-template: https://github.com/birabittoh/GoopieLauncher/releases/download/v$version/Goopie-Launcher-linux-x86_64
+      - type: file
+        only-arches:
+          - aarch64
+        url: https://github.com/birabittoh/GoopieLauncher/releases/download/v1.8.0/Goopie-Launcher-linux-aarch64
+        sha256: 7c51daca21f52165eaad6f561d1a886624bbe0e84d30a9de2cce835587da3c0a
+        dest-filename: goopie-launcher
+        x-checker-data:
+          type: github-releases
+          repository: birabittoh/GoopieLauncher
+          url-template: https://github.com/birabittoh/GoopieLauncher/releases/download/v$version/Goopie-Launcher-linux-aarch64
+      - type: file
+        path: xyz.goopie.launcher.desktop
+      - type: file
+        path: xyz.goopie.launcher.metainfo.xml
+      - type: dir
+        path: icons
+        dest: icons

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Goopie Launcher
+Comment=PC game launcher built with the ReXGlue SDK
+Exec=goopie-launcher %u
+Icon=xyz.goopie.launcher
+Type=Application
+Categories=Game;
+Terminal=false
+StartupNotify=true
+StartupWMClass=xyz.goopie.launcher
+Keywords=game;launcher;rexglue;goopie;

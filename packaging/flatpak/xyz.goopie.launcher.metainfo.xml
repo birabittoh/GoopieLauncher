@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>xyz.goopie.launcher</id>
+  <name>Goopie Launcher</name>
+  <summary>PC game launcher built with the ReXGlue SDK</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>LicenseRef-proprietary</project_license>
+  <developer id="xyz.goopie">
+    <name>Goopie</name>
+  </developer>
+  <description>
+    <p>
+      Goopie Launcher is a desktop application for launching and managing
+      PC games built with the ReXGlue SDK. It provides game download
+      management, cloud saves, achievements, Discord Rich Presence, and
+      more.
+    </p>
+  </description>
+  <launchable type="desktop-id">xyz.goopie.launcher.desktop</launchable>
+  <url type="homepage">https://goopie.xyz</url>
+  <url type="bugtracker">https://github.com/birabittoh/GoopieLauncher/issues</url>
+  <url type="vcs-browser">https://github.com/birabittoh/GoopieLauncher</url>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://goopie.xyz/screenshot.png</image>
+      <caption>Goopie Launcher interface</caption>
+    </screenshot>
+  </screenshots>
+  <releases>
+    <release version="1.8.0" date="2026-09-06">
+      <description>
+        <p>Offline image caching and updater improvements.</p>
+      </description>
+    </release>
+  </releases>
+  <categories>
+    <category>Game</category>
+  </categories>
+  <content_rating type="oars-1.1" />
+</component>
