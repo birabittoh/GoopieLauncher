@@ -4,7 +4,7 @@
   <name>Goopie Launcher</name>
   <summary>PC game launcher built with the ReXGlue SDK</summary>
   <metadata_license>CC0-1.0</metadata_license>
-  <project_license>LicenseRef-proprietary</project_license>
+  <project_license>MIT</project_license>
   <developer id="xyz.goopie">
     <name>Goopie</name>
   </developer>
@@ -22,8 +22,12 @@
   <url type="vcs-browser">https://github.com/birabittoh/GoopieLauncher</url>
   <screenshots>
     <screenshot type="default">
-      <image>https://goopie.xyz/screenshot.png</image>
-      <caption>Goopie Launcher interface</caption>
+      <image>https://raw.githubusercontent.com/birabittoh/GoopieLauncher/refs/heads/main/packaging/flatpak/screenshots/library.png</image>
+      <caption>Game library</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/birabittoh/GoopieLauncher/refs/heads/main/packaging/flatpak/screenshots/game.png</image>
+      <caption>Game details</caption>
     </screenshot>
   </screenshots>
   <releases>
