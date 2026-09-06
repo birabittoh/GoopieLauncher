@@ -2,3 +2,6 @@
 	path = GoopieWebsite
 	url = https://github.com/SolarCookies/GoopieWebsite
 	branch = tauri-support
+[submodule "packaging/flatpak/shared-modules"]
+	path = packaging/flatpak/shared-modules
+	url = https://github.com/flathub/shared-modules.git
