@@ -436,9 +436,24 @@ jobs:
           GOOPIE_RELEASES_API: ${{ vars.GOOPIE_RELEASES_API }}
           GOOPIE_DISCORD_CLIENT_ID: ${{ vars.GOOPIE_DISCORD_CLIENT_ID }}
 
+      # GitHub Actions always sets the secret env vars below — to empty
+      # strings when the secrets don't exist. Tauri's bundler treats a
+      # present-but-empty APPLE_CERTIFICATE as "import this certificate", so
+      # with no secret it tries to `security import` an empty .p12 and fails
+      # with "SecKeychainItemImport: One or more parameters passed to a
+      # function were not valid" / "failed to import keychain certificate".
+      # Hand the bundler a clean environment unless there's actually a
+      # certificate to sign with.
       - name: Build DMG (signed and notarized when release secrets are available)
         if: inputs.platform == 'macos'
-        run: cargo tauri build --bundles dmg --target ${{ inputs.arch == 'aarch64' && 'aarch64-apple-darwin' || 'x86_64-apple-darwin' }}
+        shell: bash
+        run: |
+          set -e
+          if [ -z "$APPLE_CERTIFICATE" ] || [ -z "$APPLE_CERTIFICATE_PASSWORD" ]; then
+            echo "::warning::No Apple signing certificate provided — building an unsigned DMG"
+            unset APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
+          fi
+          cargo tauri build --bundles dmg --target ${{ inputs.arch == 'aarch64' && 'aarch64-apple-darwin' || 'x86_64-apple-darwin' }}
         env:
           VERSION: ${{ inputs.version }}
           GOOPIE_OAUTH_CLIENT_ID: ${{ secrets.GOOPIE_OAUTH_CLIENT_ID }}
