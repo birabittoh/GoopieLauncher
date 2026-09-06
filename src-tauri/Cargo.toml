@@ -80,6 +80,9 @@ tauri-plugin-single-instance = "2.4.3"
 
 # Windows registry (config storage on Windows)
 # Windows .lnk shortcut creation
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = { version = "0.18", features = ["v3_24"] }
+
 [target.'cfg(windows)'.dependencies]
 winreg        = "0.52"
 junction      = "1"

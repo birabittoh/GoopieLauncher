@@ -270,6 +270,13 @@ fn navigate_and_show(app: &tauri::AppHandle, hash: &str) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Set the Wayland app_id / X11 WM_CLASS to the desktop-entry identifier so
+    // compositors can match the window to the .desktop file and show the correct
+    // taskbar/titlebar icon.  Must happen before GTK/tao initialises (i.e.
+    // before `tauri::Builder::build()`).
+    #[cfg(target_os = "linux")]
+    gtk::glib::set_prgname(Some("xyz.goopie.launcher"));
+
     // If another instance is already running and this is a `--play` shortcut
     // launch, hand off to it and wait out the game session ourselves instead
     // of building a whole second Tauri app just to have
