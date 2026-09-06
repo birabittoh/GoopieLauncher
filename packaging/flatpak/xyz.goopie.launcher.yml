@@ -15,6 +15,7 @@ finish-args:
   - --talk-name=org.kde.StatusNotifierWatcher
   - --talk-name=org.freedesktop.Notifications
   - --talk-name=org.ayatana
+  - --filesystem=xdg-run/tray-icon:create
   - --filesystem=xdg-run/discord-ipc-0
   - --env=GOOPIE_DISABLE_UPDATER=1
 
