@@ -49,6 +49,9 @@ fn releases_api_url() -> Option<String> {
 /// When set, no periodic update check ever runs (so the "update available"
 /// icon never lights up) and `self_update`/`run_self_update_check` are no-ops.
 pub fn updates_disabled() -> bool {
+    if std::env::var("FLATPAK_ID").is_ok() || std::path::Path::new("/.flatpak-info").exists() {
+        return true;
+    }
     match std::env::var("GOOPIE_DISABLE_UPDATER") {
         Ok(v) => !v.is_empty() && v != "0",
         Err(_) => false,
