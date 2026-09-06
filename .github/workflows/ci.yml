@@ -79,3 +79,17 @@ jobs:
       platform: windows
       arch: x86_64
       website-artifact: offline-site
+
+  validate-flatpak:
+    needs: prepare
+    if: needs.prepare.outputs.is-release != 'true'
+    name: Validate Flatpak metadata
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install validation tools
+        run: sudo apt-get update -qq && sudo apt-get install -y desktop-file-utils appstream
+      - name: Validate desktop file and AppStream metainfo
+        run: |
+          desktop-file-validate packaging/flatpak/xyz.goopie.launcher.desktop
+          appstreamcli validate packaging/flatpak/xyz.goopie.launcher.metainfo.xml

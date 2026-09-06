@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Check package.json, Cargo.toml, Cargo.lock, tauri.conf.json match tag
+      - name: Check package.json, Cargo.toml, Cargo.lock, tauri.conf.json, metainfo.xml match tag
         run: |
           TAG="${{ github.ref_name }}"
           EXPECTED="${TAG#v}"
@@ -19,15 +19,17 @@ jobs:
           CARGO=$(grep -m1 -E '^version\s*=' src-tauri/Cargo.toml | sed -E 's/version *= *"([^"]+)"/\1/')
           LOCK=$(grep -A1 -m1 'name = "goopie-launcher"' src-tauri/Cargo.lock | grep version | sed -E 's/version *= *"([^"]+)"/\1/')
           TAURI=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          METAINFO=$(grep -m1 -E '<release\s+version=' packaging/flatpak/xyz.goopie.launcher.metainfo.xml | sed -E 's/.*version="([^"]+)".*/\1/')
 
           echo "Tag version:      $EXPECTED"
           echo "package.json:     $PKG"
           echo "Cargo.toml:       $CARGO"
           echo "Cargo.lock:       $LOCK"
           echo "tauri.conf.json:  $TAURI"
+          echo "metainfo.xml:     $METAINFO"
 
-          if [ "$PKG" != "$EXPECTED" ] || [ "$CARGO" != "$EXPECTED" ] || [ "$LOCK" != "$EXPECTED" ] || [ "$TAURI" != "$EXPECTED" ]; then
-            echo "::error::Version mismatch — package.json, Cargo.toml, Cargo.lock, and tauri.conf.json must all be bumped to $EXPECTED (use set-version.py)"
+          if [ "$PKG" != "$EXPECTED" ] || [ "$CARGO" != "$EXPECTED" ] || [ "$LOCK" != "$EXPECTED" ] || [ "$TAURI" != "$EXPECTED" ] || [ "$METAINFO" != "$EXPECTED" ]; then
+            echo "::error::Version mismatch — package.json, Cargo.toml, Cargo.lock, tauri.conf.json, and metainfo.xml must all be bumped to $EXPECTED (use set-version.py)"
             exit 1
           fi
 
