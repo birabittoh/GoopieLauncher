@@ -181,6 +181,7 @@
   // (see getLaunchError) -- this is for the Mods panel to show the same
   // reasons proactively, before the player even tries to launch.
   window.getModValidation   = function (g)         { return call('getModValidation', [g]); };
+  window.openMacModApprovalSettings = function ()  { return call('openMacModApprovalSettings', []); };
   window.autoSortMods       = function (g)         { return call('autoSortMods', [g]); };
   // installModFromUrl is fire-and-forget like installModArchives — poll
   // isInstallingMods/getModInstallReport, and getDownloadProgress for the

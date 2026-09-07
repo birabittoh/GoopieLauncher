@@ -38,6 +38,10 @@ pub struct SidecarEntry {
     pub id: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// SHA-256 of the reviewed catalogue archive. This lives in the
+    /// launcher-owned sidecar so extracted content cannot invent provenance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checksum: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -268,7 +272,7 @@ fn reconcile(game: &str) -> Vec<SidecarEntry> {
 
     for id in &on_disk {
         if !entries.iter().any(|e| &e.id == id) {
-            entries.push(SidecarEntry { id: id.clone(), enabled: true });
+            entries.push(SidecarEntry { id: id.clone(), enabled: true, checksum: None });
         }
     }
 
@@ -397,7 +401,7 @@ pub fn list_mods(game: &str) -> Vec<ModInfo> {
 fn host_os() -> &'static str {
     match std::env::consts::OS {
         "windows" => "windows",
-        "macos" => "macos",
+        "macos" => "mac",
         _ => "linux",
     }
 }
@@ -446,6 +450,63 @@ fn warn_issue(id: &str, message: String) -> Issue {
     Issue { id: id.to_string(), kind: "warning", message }
 }
 
+#[cfg(target_os = "macos")]
+fn approval_issue(id: &str, message: String) -> Issue {
+    Issue { id: id.to_string(), kind: "approval_required", message }
+}
+
+#[cfg(target_os = "macos")]
+fn validate_macos_code_mod(game: &str, id: &str, manifest: &Manifest, checksum: Option<&str>) -> Vec<Issue> {
+    use std::process::Command;
+
+    let Some(code) = manifest.code.as_deref().filter(|value| !value.is_empty()) else { return Vec::new() };
+    if checksum.is_none_or(str::is_empty) {
+        return vec![err_issue(id, format!(
+            "\"{id}\" contains native code but has no verified catalogue checksum. Reinstall it from the catalogue or disable it."
+        ))];
+    }
+
+    let platform = format!("mac-{}", host_arch());
+    let dylib = mods_dir(game).join(id).join("code").join(&platform).join(format!("lib{code}.dylib"));
+    let canonical_root = match std::fs::canonicalize(mods_dir(game).join(id)) {
+        Ok(path) => path,
+        Err(e) => return vec![err_issue(id, format!("Cannot inspect native mod \"{id}\": {e}."))],
+    };
+    let canonical_dylib = match std::fs::canonicalize(&dylib) {
+        Ok(path) if path.starts_with(&canonical_root) => path,
+        Ok(_) => return vec![err_issue(id, format!("\"{id}\" has a native library that escapes its mod folder."))],
+        Err(_) => return vec![err_issue(id, format!(
+            "\"{id}\" is missing code/{platform}/lib{code}.dylib. Update, disable, or remove it."
+        ))],
+    };
+    let arch = if host_arch() == "arm64" { "aarch64" } else { "x86_64" };
+    let detected = crate::binfmt::detect_executable(&canonical_dylib);
+    if detected.platform != Some("macOS") || !crate::binfmt::macho_supports_arch(&canonical_dylib, arch) {
+        return vec![err_issue(id, format!(
+            "\"{id}\" does not contain a valid {arch} Mach-O library for this Mac."
+        ))];
+    }
+
+    let quarantined = Command::new("/usr/bin/xattr")
+        .args(["-p", "com.apple.quarantine"])
+        .arg(&canonical_dylib)
+        .output()
+        .is_ok_and(|output| output.status.success());
+    if quarantined {
+        let accepted = Command::new("/usr/sbin/spctl")
+            .args(["--assess", "--type", "execute"])
+            .arg(&canonical_dylib)
+            .output()
+            .is_ok_and(|output| output.status.success());
+        if !accepted {
+            return vec![approval_issue(id, format!(
+                "macOS blocked native mod \"{id}\". Approve it in System Settings > Privacy & Security, then retry."
+            ))];
+        }
+    }
+    Vec::new()
+}
+
 /// Validate the *enabled* subset of `game`'s mods, singularly and together,
 /// against the SDK's dependency rules (`requires`/`conflicts`/`load_after`,
 /// see `../rexglue-sdk/docs/mod-system.md`), plus a launcher-specific check
@@ -467,23 +528,16 @@ pub fn validate(game: &str, installed_game_version: &str) -> Validation {
         .filter(|e| e.enabled)
         .map(|e| (e.id.clone(), read_manifest(game, &e.id)))
         .collect();
-    let validation = validate_enabled(&enabled, installed_game_version);
-    // Native macOS plug-ins need their own checksum, Developer ID and
-    // notarization attestation contract. Until that capability is implemented,
-    // fail closed instead of loading a manually dropped or unverified dylib.
+    #[allow(unused_mut)]
+    let mut validation = validate_enabled(&enabled, installed_game_version);
     #[cfg(target_os = "macos")]
     {
-        let mut validation = validation;
         for (id, manifest) in &enabled {
-            if manifest.code.as_deref().is_some_and(|code| !code.is_empty()) {
-                validation.issues.push(err_issue(id,
-                    format!("\"{id}\" contains native code, which this launcher cannot verify on macOS yet. Disable it or use an asset-only mod.")));
-                validation.ok = false;
-            }
+            let checksum = entries.iter().find(|entry| entry.id == *id).and_then(|entry| entry.checksum.as_deref());
+            validation.issues.extend(validate_macos_code_mod(game, id, manifest, checksum));
         }
-        return validation;
+        validation.ok = !validation.issues.iter().any(|issue| issue.kind == "error" || issue.kind == "approval_required");
     }
-    #[cfg(not(target_os = "macos"))]
     validation
 }
 
@@ -675,12 +729,16 @@ fn sort_entries_with(entries: Vec<SidecarEntry>, manifests: &std::collections::H
     // Rebuild the full list: enabled slots take the new order from `placed`;
     // disabled entries keep their original absolute position.
     let mut placed_iter = placed.into_iter();
+    let checksums: std::collections::HashMap<_, _> = entries.iter()
+        .map(|entry| (entry.id.clone(), entry.checksum.clone()))
+        .collect();
     entries
         .into_iter()
         .map(|e| {
             if e.enabled {
                 let id = placed_iter.next().expect("placed has one entry per enabled id");
-                SidecarEntry { id: id.to_string(), enabled: true }
+                let checksum = checksums.get(id).cloned().flatten();
+                SidecarEntry { id: id.to_string(), enabled: true, checksum }
             } else {
                 e
             }
@@ -721,6 +779,13 @@ pub fn enabled_mods_arg(game: &str) -> Option<String> {
 /// anything omitted will simply be re-appended (as enabled) next time
 /// [`list_mods`]/[`enabled_mods_arg`] reconciles.
 pub fn set_state(game: &str, entries: Vec<SidecarEntry>) {
+    let existing = read_sidecar(game);
+    let entries = entries.into_iter().map(|mut entry| {
+        if entry.checksum.is_none() {
+            entry.checksum = existing.mods.iter().find(|old| old.id == entry.id).and_then(|old| old.checksum.clone());
+        }
+        entry
+    }).collect();
     write_sidecar(game, &Sidecar { mods: entries });
 }
 
@@ -861,7 +926,7 @@ pub fn install_archives(game: &str, paths: &[String]) -> InstallReport {
         match install_one_archive(&dir, path, None) {
             Ok(installed) => {
                 if !entries.iter().any(|e| e.id == installed.id) {
-                    entries.push(SidecarEntry { id: installed.id.clone(), enabled: true });
+                    entries.push(SidecarEntry { id: installed.id.clone(), enabled: true, checksum: None });
                 }
                 let version_suffix = if installed.version.is_empty() { String::new() } else { format!(" (v{})", installed.version) };
                 let message = if installed.updated {
@@ -981,7 +1046,9 @@ fn install_from_url_with_progress(
     let result = match install_one_archive(&dir, &zip_path.to_string_lossy(), Some(desired_id)) {
         Ok(installed) => {
             if !entries.iter().any(|e| e.id == installed.id) {
-                entries.push(SidecarEntry { id: installed.id.clone(), enabled: true });
+                entries.push(SidecarEntry { id: installed.id.clone(), enabled: true, checksum: expected_checksum.map(str::to_ascii_lowercase) });
+            } else if let Some(entry) = entries.iter_mut().find(|entry| entry.id == installed.id) {
+                entry.checksum = expected_checksum.map(str::to_ascii_lowercase);
             }
             let version_suffix = if installed.version.is_empty() { String::new() } else { format!(" (v{})", installed.version) };
             let message = if installed.updated {
@@ -1289,9 +1356,9 @@ mod tests {
 
         let sidecar = Sidecar {
             mods: vec![
-                SidecarEntry { id: "badapple".into(), enabled: true },
-                SidecarEntry { id: "hdost".into(), enabled: false },
-                SidecarEntry { id: "removed-from-disk".into(), enabled: true },
+                SidecarEntry { id: "badapple".into(), enabled: true, checksum: None },
+                SidecarEntry { id: "hdost".into(), enabled: false, checksum: None },
+                SidecarEntry { id: "removed-from-disk".into(), enabled: true, checksum: None },
             ],
         };
         std::fs::write(mods_dir.join(SIDECAR_NAME), toml::to_string_pretty(&sidecar).unwrap()).unwrap();
@@ -1312,13 +1379,13 @@ mod tests {
         let mut entries: Vec<SidecarEntry> = read_back.mods.into_iter().filter(|e| on_disk.contains(&e.id)).collect();
         for id in &on_disk {
             if !entries.iter().any(|e| &e.id == id) {
-                entries.push(SidecarEntry { id: id.clone(), enabled: true });
+                entries.push(SidecarEntry { id: id.clone(), enabled: true, checksum: None });
             }
         }
 
-        assert_eq!(entries[0], SidecarEntry { id: "badapple".into(), enabled: true });
-        assert_eq!(entries[1], SidecarEntry { id: "hdost".into(), enabled: false });
-        assert_eq!(entries[2], SidecarEntry { id: "newmod".into(), enabled: true });
+        assert_eq!(entries[0], SidecarEntry { id: "badapple".into(), enabled: true, checksum: None });
+        assert_eq!(entries[1], SidecarEntry { id: "hdost".into(), enabled: false, checksum: None });
+        assert_eq!(entries[2], SidecarEntry { id: "newmod".into(), enabled: true, checksum: None });
         assert_eq!(entries.len(), 3, "the gone-from-disk entry must be dropped, not carried forward");
     }
 
@@ -1626,7 +1693,7 @@ mod tests {
     }
 
     fn entries(pairs: &[(&str, bool)]) -> Vec<SidecarEntry> {
-        pairs.iter().map(|(id, enabled)| SidecarEntry { id: id.to_string(), enabled: *enabled }).collect()
+        pairs.iter().map(|(id, enabled)| SidecarEntry { id: id.to_string(), enabled: *enabled, checksum: None }).collect()
     }
 
     #[test]
@@ -1640,6 +1707,19 @@ mod tests {
         let sorted = sort_entries_with(e, &manifests);
         let ids: Vec<&str> = sorted.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, vec!["game_symbols", "ui_color"]);
+    }
+
+    #[test]
+    fn sort_entries_with_preserves_catalogue_checksum() {
+        let mut e = entries(&[("dependent", true), ("library", true)]);
+        e[1].checksum = Some("abc123".into());
+        let mut manifests = std::collections::HashMap::new();
+        manifests.insert("dependent".to_string(), manifest(None, &["library"], &[], &[], &[]));
+        manifests.insert("library".to_string(), manifest(None, &[], &[], &[], &[]));
+
+        let sorted = sort_entries_with(e, &manifests);
+        assert_eq!(sorted[0].id, "library");
+        assert_eq!(sorted[0].checksum.as_deref(), Some("abc123"));
     }
 
     #[test]
@@ -1661,6 +1741,6 @@ mod tests {
         manifests.insert("other".to_string(), manifest(None, &[], &[], &[], &[]));
 
         let sorted = sort_entries_with(e, &manifests);
-        assert_eq!(sorted[1], SidecarEntry { id: "disabled_lib".into(), enabled: false }, "disabled entries keep their absolute slot");
+        assert_eq!(sorted[1], SidecarEntry { id: "disabled_lib".into(), enabled: false, checksum: None }, "disabled entries keep their absolute slot");
     }
 }

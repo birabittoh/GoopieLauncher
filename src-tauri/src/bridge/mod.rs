@@ -865,6 +865,11 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
             let installed_version = games::installed_game_version(&game);
             json!(crate::mods::validate(&game, &installed_version))
         }
+        "openMacModApprovalSettings" => {
+            #[cfg(target_os = "macos")]
+            platform::open_url("x-apple.systempreferences:com.apple.preference.security?Privacy");
+            json!(true)
+        }
         "autoSortMods" => {
             crate::mods::auto_sort(&str_arg(&args, 0));
             Value::Null
