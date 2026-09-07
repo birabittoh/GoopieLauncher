@@ -467,7 +467,24 @@ pub fn validate(game: &str, installed_game_version: &str) -> Validation {
         .filter(|e| e.enabled)
         .map(|e| (e.id.clone(), read_manifest(game, &e.id)))
         .collect();
-    validate_enabled(&enabled, installed_game_version)
+    let validation = validate_enabled(&enabled, installed_game_version);
+    // Native macOS plug-ins need their own checksum, Developer ID and
+    // notarization attestation contract. Until that capability is implemented,
+    // fail closed instead of loading a manually dropped or unverified dylib.
+    #[cfg(target_os = "macos")]
+    {
+        let mut validation = validation;
+        for (id, manifest) in &enabled {
+            if manifest.code.as_deref().is_some_and(|code| !code.is_empty()) {
+                validation.issues.push(err_issue(id,
+                    format!("\"{id}\" contains native code, which this launcher cannot verify on macOS yet. Disable it or use an asset-only mod.")));
+                validation.ok = false;
+            }
+        }
+        return validation;
+    }
+    #[cfg(not(target_os = "macos"))]
+    validation
 }
 
 /// Pure core of [`validate`]: takes the already-resolved enabled mods (in
