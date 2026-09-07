@@ -927,6 +927,10 @@ pub fn install_archives(game: &str, paths: &[String]) -> InstallReport {
             Ok(installed) => {
                 if !entries.iter().any(|e| e.id == installed.id) {
                     entries.push(SidecarEntry { id: installed.id.clone(), enabled: true, checksum: None });
+                } else if let Some(entry) = entries.iter_mut().find(|entry| entry.id == installed.id) {
+                    // A local archive was not the reviewed catalogue asset,
+                    // so replacing a mod must invalidate its provenance.
+                    entry.checksum = None;
                 }
                 let version_suffix = if installed.version.is_empty() { String::new() } else { format!(" (v{})", installed.version) };
                 let message = if installed.updated {
