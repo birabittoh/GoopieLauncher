@@ -80,6 +80,28 @@ jobs:
       arch: x86_64
       website-artifact: offline-site
 
+  build-macos-x64:
+    needs: [prepare, build-website]
+    if: needs.prepare.outputs.is-release != 'true'
+    uses: ./.github/workflows/_build.yml
+    secrets: inherit
+    with:
+      version: ${{ needs.prepare.outputs.sha-short }}
+      platform: macos
+      arch: x86_64
+      website-artifact: offline-site
+
+  build-macos-arm64:
+    needs: [prepare, build-website]
+    if: needs.prepare.outputs.is-release != 'true'
+    uses: ./.github/workflows/_build.yml
+    secrets: inherit
+    with:
+      version: ${{ needs.prepare.outputs.sha-short }}
+      platform: macos
+      arch: aarch64
+      website-artifact: offline-site
+
   validate-flatpak:
     needs: prepare
     if: needs.prepare.outputs.is-release != 'true'

@@ -88,9 +88,31 @@ jobs:
       versioned_filename: false
       website-artifact: offline-site
 
+  build-macos-x64:
+    needs: build-website
+    uses: ./.github/workflows/_build.yml
+    secrets: inherit
+    with:
+      version: ${{ github.ref_name }}
+      platform: macos
+      arch: x86_64
+      versioned_filename: false
+      website-artifact: offline-site
+
+  build-macos-arm64:
+    needs: build-website
+    uses: ./.github/workflows/_build.yml
+    secrets: inherit
+    with:
+      version: ${{ github.ref_name }}
+      platform: macos
+      arch: aarch64
+      versioned_filename: false
+      website-artifact: offline-site
+
   release:
     name: Create GitHub Release
-    needs: [build-linux, build-linux-arm64, build-windows]
+    needs: [build-linux, build-linux-arm64, build-windows, build-macos-x64, build-macos-arm64]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -113,4 +135,5 @@ jobs:
             artifacts/**/*-portable/*
             artifacts/**/*.msi
             artifacts/**/*.exe
+            artifacts/**/*.dmg
           generate_release_notes: true

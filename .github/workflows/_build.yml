@@ -8,7 +8,7 @@ on:
         type: string
         required: true
       platform:
-        description: "Target platform: linux or windows"
+        description: "Target platform: linux, macos, or windows"
         type: string
         required: true
       arch:
@@ -39,10 +39,22 @@ on:
       GOOPIE_OAUTH_CLIENT_SECRET:
         description: "Google Desktop OAuth 2.0 client secret (public for Desktop apps; baked into the binary)"
         required: true
+      APPLE_CERTIFICATE:
+        required: false
+      APPLE_CERTIFICATE_PASSWORD:
+        required: false
+      APPLE_SIGNING_IDENTITY:
+        required: false
+      APPLE_ID:
+        required: false
+      APPLE_PASSWORD:
+        required: false
+      APPLE_TEAM_ID:
+        required: false
 
 jobs:
   build:
-    runs-on: ${{ inputs.platform == 'linux' && (inputs.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04') || 'windows-latest' }}
+    runs-on: ${{ inputs.platform == 'linux' && (inputs.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04') || inputs.platform == 'macos' && (inputs.arch == 'aarch64' && 'macos-15' || 'macos-15-intel') || 'windows-latest' }}
 
     steps:
       - name: Checkout
@@ -424,6 +436,22 @@ jobs:
           GOOPIE_RELEASES_API: ${{ vars.GOOPIE_RELEASES_API }}
           GOOPIE_DISCORD_CLIENT_ID: ${{ vars.GOOPIE_DISCORD_CLIENT_ID }}
 
+      - name: Build DMG (signed and notarized when release secrets are available)
+        if: inputs.platform == 'macos'
+        run: cargo tauri build --bundles dmg --target ${{ inputs.arch == 'aarch64' && 'aarch64-apple-darwin' || 'x86_64-apple-darwin' }}
+        env:
+          VERSION: ${{ inputs.version }}
+          GOOPIE_OAUTH_CLIENT_ID: ${{ secrets.GOOPIE_OAUTH_CLIENT_ID }}
+          GOOPIE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOPIE_OAUTH_CLIENT_SECRET }}
+          GOOPIE_RELEASES_API: ${{ vars.GOOPIE_RELEASES_API }}
+          GOOPIE_DISCORD_CLIENT_ID: ${{ vars.GOOPIE_DISCORD_CLIENT_ID }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
       # ── Stage artifacts with consistent hyphenated names ───────────────────
       - name: Stage artifacts (Linux)
         if: inputs.platform == 'linux'
@@ -459,6 +487,16 @@ jobs:
           Copy-Item $exe.FullName  "staged/$base.exe"
           Copy-Item $msi.FullName  "staged/$base.msi"
           Copy-Item $nsis.FullName "staged/$base-setup.exe"
+
+      - name: Stage artifact (macOS)
+        if: inputs.platform == 'macos'
+        run: |
+          mkdir -p staged
+          ARCH="${{ inputs.arch == 'aarch64' && 'arm64' || 'x64' }}"
+          BASE="Goopie-Launcher-macos-$ARCH"
+          if [ "${{ inputs.versioned_filename }}" = "true" ]; then BASE="Goopie-Launcher-${{ inputs.version }}-macos-$ARCH"; fi
+          echo "ARTIFACT_BASE=$BASE" >> "$GITHUB_ENV"
+          find src-tauri/target -path '*/release/bundle/dmg/*.dmg' -exec cp {} "staged/${BASE}.dmg" \;
 
       # ── Artifact upload (one artifact per bundle type) ─────────────────────
       # .deb is no longer built/published — see "Stage artifacts (Linux)" above.
@@ -503,3 +541,10 @@ jobs:
         with:
           name: Goopie-Launcher-${{ inputs.version }}-windows-${{ inputs.arch }}-portable
           path: staged/${{ env.ARTIFACT_BASE }}.exe
+
+      - name: Upload macOS DMG
+        if: inputs.platform == 'macos'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Goopie-Launcher-${{ inputs.version }}-macos-${{ inputs.arch }}-dmg
+          path: staged/*.dmg
