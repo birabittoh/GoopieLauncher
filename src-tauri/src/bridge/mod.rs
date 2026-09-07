@@ -592,6 +592,13 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
         // ── Platform ──────────────────────────────────────────────────────────
         "GetPlatform"  => json!(platform::get_platform()),
         "GetArch"      => json!(platform::get_arch()),
+        "getLauncherCapabilities" => json!({
+            "macosAppInstall": cfg!(target_os = "macos"),
+            "macosCodeModVerification": false,
+            "supportedPlatformIds": if cfg!(target_os = "macos") {
+                vec![format!("mac-{}", if platform::get_arch() == "aarch64" { "arm64" } else { "x64" })]
+            } else { Vec::<String>::new() },
+        }),
         "getVersion"   => json!(env!("CARGO_PKG_VERSION")),
 
         "CheckForLauncherUpdate" => {
@@ -909,10 +916,12 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
                 Some(str_arg(&args, 3))
             };
             let packages_json = args.get(4).cloned();
+            let asset_digest = args.get(5).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(str::to_owned);
+            let bundle_identifier = args.get(6).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(str::to_owned);
             let state_clone = Arc::clone(state);
             std::thread::spawn(move || {
                 games::update(&game_name, &release_url, asset_name.as_deref(),
-                              version_tag.as_deref(), packages_json, state_clone);
+                              version_tag.as_deref(), packages_json, asset_digest.as_deref(), bundle_identifier.as_deref(), state_clone);
             });
             Value::Null
         }

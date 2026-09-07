@@ -1864,6 +1864,7 @@ dependencies = [
  "lzxd",
  "mslnk",
  "open",
+ "plist",
  "reqwest 0.12.28",
  "rfd",
  "serde",

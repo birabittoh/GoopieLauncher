@@ -61,6 +61,7 @@ toml          = "0.8"
 # matches the version `toml 0.8` already pulls in transitively, so it adds no
 # extra crate to the dependency tree.
 toml_edit     = "0.20"
+plist         = "1"
 
 # Base64 encoding (achievement icon data URLs delivered over the bridge)
 base64        = "0.22"

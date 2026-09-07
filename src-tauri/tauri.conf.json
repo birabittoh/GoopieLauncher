@@ -35,6 +35,10 @@
       "appimage": {
         "bundleMediaFramework": true
       }
+    },
+    "macOS": {
+      "minimumSystemVersion": "13.3",
+      "entitlements": "Entitlements.plist"
     }
   }
 }

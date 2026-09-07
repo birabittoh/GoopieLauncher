@@ -119,7 +119,7 @@ fn detect_macho(data: &[u8]) -> ExeInfo {
     let magic = &data[0..4];
     let is_fat = magic == b"\xCA\xFE\xBA\xBE" || magic == b"\xBE\xBA\xFE\xCA";
     if is_fat {
-        return ExeInfo { platform: Some("macOS"), arch: None };
+        return ExeInfo { platform: Some("macOS"), arch: Some("universal") };
     }
     if data.len() < 8 {
         return ExeInfo { platform: Some("macOS"), arch: None };
@@ -138,6 +138,32 @@ fn detect_macho(data: &[u8]) -> ExeInfo {
         _ => None,
     };
     ExeInfo { platform: Some("macOS"), arch }
+}
+
+/// Return whether a Mach-O executable contains a slice compatible with `arch`.
+/// Thin images use their header CPU type; FAT32/FAT64 images inspect every
+/// architecture record instead of treating any universal image as compatible.
+pub fn macho_supports_arch(path: &std::path::Path, arch: &str) -> bool {
+    let Ok(data) = std::fs::read(path) else { return false };
+    macho_bytes_support_arch(&data, arch)
+}
+
+fn macho_bytes_support_arch(data: &[u8], arch: &str) -> bool {
+    if data.len() < 8 { return false; }
+    let wanted = match arch { "aarch64" | "arm64" => 0x0100_000C, "x86_64" | "x64" => 0x0100_0007, _ => return false };
+    let magic = &data[..4];
+    if matches!(magic, b"\xCA\xFE\xBA\xBE" | b"\xCA\xFE\xBA\xBF" | b"\xBE\xBA\xFE\xCA" | b"\xBF\xBA\xFE\xCA") {
+        let little = magic == b"\xBE\xBA\xFE\xCA" || magic == b"\xBF\xBA\xFE\xCA";
+        let fat64 = magic == b"\xCA\xFE\xBA\xBF" || magic == b"\xBF\xBA\xFE\xCA";
+        let read = |s: &[u8]| if little { u32::from_le_bytes(s.try_into().unwrap()) } else { u32::from_be_bytes(s.try_into().unwrap()) };
+        let count = read(&data[4..8]) as usize;
+        let stride = if fat64 { 32 } else { 20 };
+        return (0..count).any(|i| {
+            let offset = 8 + i * stride;
+            data.get(offset..offset + 4).is_some_and(|bytes| read(bytes) == wanted)
+        });
+    }
+    detect_macho(data).arch == Some(arch)
 }
 
 #[cfg(test)]
@@ -223,7 +249,19 @@ mod tests {
     #[test]
     fn macho_fat_unknown_arch() {
         let info = detect_from_bytes(&[0xCA, 0xFE, 0xBA, 0xBE, 0, 0, 0, 2]);
-        assert_eq!(info, ExeInfo { platform: Some("macOS"), arch: None });
+        assert_eq!(info, ExeInfo { platform: Some("macOS"), arch: Some("universal") });
+    }
+
+    #[test]
+    fn macho_fat_checks_each_slice() {
+        let mut fat = vec![0u8; 48];
+        fat[..4].copy_from_slice(b"\xCA\xFE\xBA\xBE");
+        fat[4..8].copy_from_slice(&2u32.to_be_bytes());
+        fat[8..12].copy_from_slice(&0x0100_0007u32.to_be_bytes());
+        fat[28..32].copy_from_slice(&0x0100_000Cu32.to_be_bytes());
+        assert!(macho_bytes_support_arch(&fat, "x86_64"));
+        assert!(macho_bytes_support_arch(&fat, "aarch64"));
+        assert!(!macho_bytes_support_arch(&fat[..28], "aarch64"));
     }
 
     #[test]

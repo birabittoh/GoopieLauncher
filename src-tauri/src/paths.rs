@@ -2,6 +2,19 @@
 
 use std::path::PathBuf;
 
+/// ReXGlue's external config location for a native macOS app bundle.
+pub fn macos_game_config_file(game: &str) -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        let dir = PathBuf::from(std::env::var_os("HOME")?)
+            .join("Library").join("Application Support").join(game);
+        std::fs::create_dir_all(&dir).ok()?;
+        Some(dir.join(format!("{game}.toml")))
+    }
+    #[cfg(not(target_os = "macos"))]
+    { let _ = game; None }
+}
+
 /// Return the path to the config file / directory.
 ///
 /// - Windows: uses registry (see `config.rs`) — this returns a placeholder.

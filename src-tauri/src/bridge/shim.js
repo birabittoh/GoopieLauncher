@@ -67,6 +67,7 @@
   // ── Platform ─────────────────────────────────────────────────────────────────
   window.GetPlatform     = function ()    { return call('GetPlatform', []); };
   window.GetArch         = function ()    { return call('GetArch', []); };
+  window.getLauncherCapabilities = function () { return call('getLauncherCapabilities', []); };
   window.getVersion      = function ()    { return call('getVersion', []); };
 
   // ── Launcher self-update ─────────────────────────────────────────────────────
@@ -128,7 +129,7 @@
   window.Uninstall       = function (g, b)             { return call('Uninstall', [g, b]); };
   window.UninstallAll    = function (g)                { return call('UninstallAll', [g]); };
   window.RemoveAssets    = function (g)                { return call('RemoveAssets', [g]); };
-  window.Update          = function (g, u, a, v, p)    { return call('Update', [g, u, a, v, p]); };
+  window.Update          = function (g, u, a, v, p, d, b) { return call('Update', [g, u, a, v, p, d, b]); };
   window.NeedsUpdate     = function (g, b, u, a)       { return call('NeedsUpdate', [g, b, u, a]); };
   // `t` (7th, optional) is a JSON object mapping each cvar tag to its
   // declared type (Int/Float/Bool/Enum), so the launcher can write it into

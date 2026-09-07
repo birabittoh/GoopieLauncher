@@ -7,7 +7,7 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
-use crate::{archive, config, download, AppState};
+use crate::{archive, config, download, macos_dmg, AppState};
 
 /// Everything needed to spawn a game process: program, arguments, working
 /// directory, and optional environment overrides.  Built by [`resolve_launch`]
@@ -294,6 +294,8 @@ pub fn get_installed_builds(game: &str) -> Vec<serde_json::Value> {
                 "name": format!("{}/{}", tag_name, asset_dir_name),
                 "version": json_extract_str(&sidecar, "version"),
                 "asset": json_extract_str(&sidecar, "asset"),
+                "kind": json_extract_str(&sidecar, "kind"),
+                "appPath": json_extract_str(&sidecar, "appPath"),
                 "exePath": json_extract_str(&sidecar, "exePath"),
                 "platform": json_extract_str(&sidecar, "platform"),
                 "arch": json_extract_str(&sidecar, "arch"),
@@ -352,7 +354,14 @@ pub fn open_update_folder(game: &str) {
 
 /// Open the logs folder for a specific build in the system file manager.
 pub fn open_build_logs_folder(game: &str, build: &str) {
-    let dir = build_dir(game, build).join("logs");
+    let build = build_dir(game, build);
+    let dir = if sidecar_kind(&build).as_deref() == Some(macos_dmg::BUILD_KIND) {
+        crate::paths::macos_game_config_file(game)
+            .and_then(|p| p.parent().map(|p| p.join("logs")))
+            .unwrap_or_else(|| build.join("logs"))
+    } else {
+        build.join("logs")
+    };
     let _ = std::fs::create_dir_all(&dir);
     crate::platform::open_folder(&dir.to_string_lossy());
 }
@@ -367,6 +376,9 @@ fn find_config_file(game: &str) -> Option<PathBuf> {
     let candidates: Vec<PathBuf> = builds.iter().filter_map(|b| {
         let key = b["name"].as_str()?;
         let dir = build_dir(game, key);
+        if sidecar_kind(&dir).as_deref() == Some(macos_dmg::BUILD_KIND) {
+            return crate::paths::macos_game_config_file(game);
+        }
         let exe_path = installed_exe_path(&dir, game);
         let exe_dir = exe_path.parent().unwrap_or(&dir);
         Some(exe_dir.join(format!("{}.toml", game)))
@@ -455,8 +467,7 @@ pub fn needs_update(game: &str, build: &str, github_api_url: &str, asset_name: O
     } else {
         effective_asset
     };
-
-    if archive::is_archive(&effective_asset) {
+    if archive::is_archive(&effective_asset) || effective_asset.to_ascii_lowercase().ends_with(".dmg") {
         // ── Archive path: version-tag comparison ─────────────────────────────
         let sidecar_path = dir.join(".installed.json");
         if !sidecar_path.exists() {
@@ -510,6 +521,8 @@ pub fn update(
     asset_name: Option<&str>,
     version_tag: Option<&str>,
     packages_json: Option<serde_json::Value>,
+    asset_digest: Option<&str>,
+    bundle_identifier: Option<&str>,
     state: Arc<AppState>,
 ) {
     let version = version_tag.unwrap_or("").to_string();
@@ -531,6 +544,12 @@ pub fn update(
     } else {
         effective_asset
     };
+    let is_dmg = effective_asset.to_ascii_lowercase().ends_with(".dmg");
+    if is_dmg && !cfg!(target_os = "macos") {
+        *state.last_download_error.lock().unwrap() = Some("DMG installation is only supported on macOS".into());
+        state.finish_download();
+        return;
+    }
 
     let dir = game_root(game)
         .join("builds")
@@ -539,7 +558,9 @@ pub fn update(
     // For single-exe assets the asset name doubles as the on-disk filename, so
     // `dir` may exist as a FILE from an un-migrated install.  Fall back to
     // remove_file so create_dir_all can proceed.
-    let _ = std::fs::remove_dir_all(&dir).or_else(|_| std::fs::remove_file(&dir));
+    if !is_dmg {
+        let _ = std::fs::remove_dir_all(&dir).or_else(|_| std::fs::remove_file(&dir));
+    }
     let _ = std::fs::create_dir_all(&dir);
 
     let is_archive = archive::is_archive(&effective_asset);
@@ -549,7 +570,11 @@ pub fn update(
     // host's canonical name, so a Windows build downloaded on Linux keeps its
     // `.exe` and is routed through Proton at launch instead of being mistaken for
     // a native binary.  `exePath` is recorded in the sidecar below.
-    let local_path = dir.join(&effective_asset);
+    let local_path = if is_dmg {
+        dir.join(format!(".download-{}.dmg", std::process::id()))
+    } else {
+        dir.join(&effective_asset)
+    };
 
     let download_url = format!("{}{}", base_url, effective_asset);
     eprintln!("[games] Downloading {} → {}", download_url, local_path.display());
@@ -573,6 +598,41 @@ pub fn update(
 
     let sidecar_path = dir.join(".installed.json");
 
+    if is_dmg {
+        let installed = macos_dmg::install(
+            &local_path,
+            &dir,
+            asset_digest.unwrap_or(""),
+            bundle_identifier.unwrap_or(""),
+            &version,
+            crate::platform::get_arch(),
+        );
+        let _ = std::fs::remove_file(&local_path);
+        match installed {
+            Ok(app) => write_sidecar(
+                &sidecar_path, &version, &effective_asset, Some(&app.exe_path),
+                crate::binfmt::ExeInfo {
+                    platform: Some("macOS"),
+                    arch: match app.arch.as_str() {
+                        "aarch64" => Some("aarch64"),
+                        "x86_64" => Some("x86_64"),
+                        "universal" => Some("universal"),
+                        _ => None,
+                    },
+                },
+                Some((macos_dmg::BUILD_KIND, &app.app_path)),
+            ),
+            Err(e) => {
+                eprintln!("[games] DMG install failed: {e}");
+                *state.last_download_error.lock().unwrap() = Some(e);
+                state.finish_download();
+                return;
+            }
+        }
+        state.finish_download();
+        return;
+    }
+
     if is_archive {
         // ── New archive format ────────────────────────────────────────────────
         eprintln!("[games] Extracting archive {}", local_path.display());
@@ -595,7 +655,7 @@ pub fn update(
             crate::binfmt::detect_executable(&dir.join(&exe_name))
         };
 
-        write_sidecar(&sidecar_path, &version, &effective_asset, Some(&exe_name), exe_info);
+        write_sidecar(&sidecar_path, &version, &effective_asset, Some(&exe_name), exe_info, None);
     } else {
         // ── Legacy single-exe format ──────────────────────────────────────────
         // Try to download optional .toml config.
@@ -613,7 +673,7 @@ pub fn update(
         }
 
         let exe_info = crate::binfmt::detect_executable(&local_path);
-        write_sidecar(&sidecar_path, &version, &effective_asset, Some(&effective_asset), exe_info);
+        write_sidecar(&sidecar_path, &version, &effective_asset, Some(&effective_asset), exe_info, None);
     }
 
     // ── Optional zip packages ─────────────────────────────────────────────────
@@ -719,7 +779,9 @@ pub fn resolve_launch(
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&exe_path, std::fs::Permissions::from_mode(0o755));
+        if sidecar_kind(&dir).as_deref() != Some(macos_dmg::BUILD_KIND) {
+            let _ = std::fs::set_permissions(&exe_path, std::fs::Permissions::from_mode(0o755));
+        }
     }
 
     let language = crate::config::get_language();
@@ -733,6 +795,7 @@ pub fn resolve_launch(
     // read it from there).
     let mut managed: Vec<(String, String)> = vec![("user_language".to_string(), language.to_string())];
 
+    let is_macos_app = sidecar_kind(&dir).as_deref() == Some(macos_dmg::BUILD_KIND);
     if set_data_root {
         let assets_dir = game_root(game).join("assets");
         managed.push(("game_data_root".to_string(), assets_dir.to_string_lossy().into_owned()));
@@ -740,15 +803,14 @@ pub fn resolve_launch(
         if mount_update && update_dir.is_dir() && std::fs::read_dir(&update_dir).map(|mut d| d.next().is_some()).unwrap_or(false) {
             managed.push(("update_data_root".to_string(), update_dir.to_string_lossy().into_owned()));
         }
-    } else {
+    } else if !is_macos_app {
         ensure_assets_link(game, &dir);
     }
 
     let xexp = game_root(game).join("assets").join("default.xexp");
-    if mount_update {
-        ensure_xexp_link(game);
-    } else if xexp.exists() {
-        let _ = std::fs::remove_file(&xexp);
+    if !is_macos_app {
+        if mount_update { ensure_xexp_link(game); }
+        else if xexp.exists() { let _ = std::fs::remove_file(&xexp); }
     }
 
     managed.extend(parse_cvar_pairs(cvar_args));
@@ -766,12 +828,22 @@ pub fn resolve_launch(
     // this launch (e.g. `mount_update` toggled off), drop it from the file
     // instead of leaving a stale value the game would otherwise re-apply.
     const OWNED_KEYS: &[&str] = &[
-        "user_language", "game_data_root", "update_data_root",
+        "user_language", "user_data_root", "game_data_root", "update_data_root",
         "mods_data_root", "enabled_mods",
     ];
     let types = parse_cvar_types(cvar_types);
-    let exe_dir = exe_path.parent().unwrap_or(&dir);
-    write_cvars_config(&exe_dir.join(format!("{}.toml", game)), &managed, OWNED_KEYS, &types)?;
+    if is_macos_app {
+        managed.push(("user_data_root".into(), game_root(game).join("saves").to_string_lossy().into_owned()));
+        managed.push(("game_data_root".into(), game_root(game).join("assets").to_string_lossy().into_owned()));
+        managed.push(("update_data_root".into(), game_root(game).join("update").to_string_lossy().into_owned()));
+        managed.push(("mods_data_root".into(), crate::mods::mods_dir(game).to_string_lossy().into_owned()));
+    }
+    let config_path = if is_macos_app {
+        crate::paths::macos_game_config_file(game).ok_or("Could not resolve macOS Application Support directory")?
+    } else {
+        exe_path.parent().unwrap_or(&dir).join(format!("{}.toml", game))
+    };
+    write_cvars_config(&config_path, &managed, OWNED_KEYS, &types)?;
 
     // Only `game_data_root` stays on the command line — everything else now
     // lives in the TOML written above.
@@ -798,6 +870,18 @@ pub fn resolve_launch(
         }
     }
 
+    #[cfg(target_os = "macos")]
+    if is_macos_app {
+        let app = sidecar_app_path(&dir).ok_or("Installed macOS app sidecar has no appPath")?;
+        let app = dir.join(app);
+        return Ok(LaunchSpec {
+            program: PathBuf::from("/usr/bin/open"),
+            args: vec!["-n".into(), "-W".into(), app.to_string_lossy().into_owned()],
+            cwd: dir,
+            env: Vec::new(),
+            exe_name: exe_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+        });
+    }
     let cwd = exe_path.parent().unwrap_or(&dir).to_path_buf();
     let exe_name = exe_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     Ok(LaunchSpec { program: exe_path, args, cwd, env: Vec::new(), exe_name })
@@ -1038,6 +1122,19 @@ fn sidecar_exe_path(dir: &Path) -> Option<String> {
     let contents = std::fs::read_to_string(dir.join(".installed.json")).ok()?;
     let v = json_extract_str(&contents, "exePath");
     if v.is_empty() { None } else { Some(v) }
+}
+
+fn sidecar_kind(dir: &Path) -> Option<String> {
+    let contents = std::fs::read_to_string(dir.join(".installed.json")).ok()?;
+    let value = json_extract_str(&contents, "kind");
+    (!value.is_empty()).then_some(value)
+}
+
+#[cfg(target_os = "macos")]
+fn sidecar_app_path(dir: &Path) -> Option<String> {
+    let contents = std::fs::read_to_string(dir.join(".installed.json")).ok()?;
+    let value = json_extract_str(&contents, "appPath");
+    (!value.is_empty()).then_some(value)
 }
 
 /// Next sequential log filename for a build's `logs/` dir, matching the Rex
@@ -1297,18 +1394,13 @@ fn installed_exe_path(dir: &Path, game: &str) -> PathBuf {
 /// [`crate::binfmt::detect_executable`] from the installed executable (if any
 /// was found/scanned) — `None` fields are omitted, which the frontend treats
 /// as "unknown" and never gates on.
-fn write_sidecar(path: &Path, version: &str, asset: &str, exe_path: Option<&str>, exe_info: crate::binfmt::ExeInfo) {
+fn write_sidecar(path: &Path, version: &str, asset: &str, exe_path: Option<&str>, exe_info: crate::binfmt::ExeInfo, app: Option<(&str, &str)>) {
     let exe_field = exe_path.map(|e| format!(r#","exePath":"{}""#, e.replace('\\', "\\\\").replace('"', "\\\""))).unwrap_or_default();
     let platform_field = exe_info.platform.map(|p| format!(r#","platform":"{}""#, p)).unwrap_or_default();
     let arch_field = exe_info.arch.map(|a| format!(r#","arch":"{}""#, a)).unwrap_or_default();
-    let json = format!(
-        r#"{{"version":"{}","asset":"{}"{}{}{}}}"#,
-        version.replace('"', "\\\""),
-        asset.replace('"', "\\\""),
-        exe_field,
-        platform_field,
-        arch_field,
-    );
+    let app_fields = app.map(|(kind, path)| format!(r#", "kind":"{}","appPath":"{}""#, kind, path.replace('"', "\\\""))).unwrap_or_default();
+    let json = format!(r#"{{"version":"{}","asset":"{}"{}{}{}{}}}"#,
+        version.replace('"', "\\\""), asset.replace('"', "\\\""), exe_field, platform_field, arch_field, app_fields);
     if let Err(e) = std::fs::write(path, json) {
         eprintln!("[games] Failed to write sidecar {}: {}", path.display(), e);
     }

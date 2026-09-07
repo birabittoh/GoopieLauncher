@@ -12,6 +12,7 @@ mod games;
 mod extract;
 mod image_cache;
 mod mods;
+mod macos_dmg;
 mod offline_site;
 mod paths;
 mod platform;
