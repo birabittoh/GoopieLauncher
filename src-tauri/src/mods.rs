@@ -398,6 +398,7 @@ fn host_os() -> &'static str {
     match std::env::consts::OS {
         "windows" => "windows",
         "macos" => "macos",
+        "android" => "android",
         _ => "linux",
     }
 }
