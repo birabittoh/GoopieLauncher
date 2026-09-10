@@ -6,7 +6,10 @@ command: goopie-launcher
 
 finish-args:
   - --socket=wayland
-  - --socket=fallback-x11
+  # Not fallback-x11: that passes the X11 socket only when Wayland is absent,
+  # so on a Wayland session a game that needs XWayland would have no DISPLAY.
+  # Games inherit this sandbox, so X11 has to be available unconditionally.
+  - --socket=x11
   - --socket=pulseaudio
   # Games run as children of the launcher, so they inherit this sandbox.
   # SDL enumerates gamepads from /dev/input/event* and talks to PS4/PS5/Switch
