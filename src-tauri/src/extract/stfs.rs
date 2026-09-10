@@ -90,7 +90,12 @@ fn parse_entries_any(path: &str) -> std::io::Result<Vec<StfsEntry>> {
             break;
         }
 
-        let name = String::from_utf8_lossy(&raw[..name_len]).into_owned();
+        let mut name = String::from_utf8_lossy(&raw[..name_len]).into_owned();
+        if name.eq_ignore_ascii_case("default.xex") {
+            name = "default.xex".to_string();
+        } else if name.eq_ignore_ascii_case("default.xexp") {
+            name = "default.xexp".to_string();
+        }
 
         entries.push(StfsEntry {
             index,

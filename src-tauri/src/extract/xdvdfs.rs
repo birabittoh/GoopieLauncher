@@ -28,8 +28,14 @@ pub fn extract(iso_path: &str, dest: &Path) -> std::io::Result<usize> {
                 std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{:?}", e))
             })?;
 
-        let rel_path = if parent.is_empty() {
+        let name = if name.eq_ignore_ascii_case("default.xex") {
+            "default.xex".to_string()
+        } else {
             name.to_string()
+        };
+
+        let rel_path = if parent.is_empty() {
+            name
         } else {
             format!("{}/{}", parent.trim_start_matches('/'), name)
         };
