@@ -5,7 +5,7 @@
 //! image, achievement metadata, string tables, and more.
 
 use std::{
-    io::{self, Read},
+    io::{self, Read, Seek, SeekFrom},
     path::Path,
 };
 
@@ -337,6 +337,41 @@ impl Xdbf {
 }
 
 // -- Public API ---------------------------------------------------------------
+
+/// Read just the title id from an XEX2 file's Execution Info optional header.
+///
+/// Much cheaper than [`load_xdbf`], and unlike it this succeeds for games that
+/// carry no XDBF/SPA resource at all — the title id lives in the XEX header
+/// proper. Returns `None` when the file is missing, is not a XEX2, or has no
+/// Execution Info header.
+pub fn read_title_id(xex_path: &Path) -> Option<u32> {
+    let mut file = std::fs::File::open(xex_path).ok()?;
+    let mut head = vec![0u8; 0x18];
+    file.read_exact(&mut head).ok()?;
+    if &head[0..4] != b"XEX2" {
+        return None;
+    }
+    let opt_header_count = read_u32_be(&head, 0x14) as usize;
+
+    // The optional header table follows the 0x18-byte header, 8 bytes per entry.
+    let mut table = vec![0u8; opt_header_count.checked_mul(8)?];
+    file.read_exact(&mut table).ok()?;
+
+    for i in 0..opt_header_count {
+        let entry_off = i * 8;
+        if read_u32_be(&table, entry_off) != 0x00040006 {
+            continue;
+        }
+        // Execution Info: file offset to xex2_opt_execution_info; +0x0C is the
+        // title id.
+        let off = u64::from(read_u32_be(&table, entry_off + 4));
+        file.seek(SeekFrom::Start(off + 0x0C)).ok()?;
+        let mut buf = [0u8; 4];
+        file.read_exact(&mut buf).ok()?;
+        return Some(u32::from_be_bytes(buf));
+    }
+    None
+}
 
 /// Parse an XEX2 file: decrypt + decompress the basefile, locate and validate
 /// the XDBF/SPA resource, and return a queryable [`Xdbf`] wrapper.

@@ -142,11 +142,7 @@ fn save_definition_cache(assets_dir: &Path, cache: &DefinitionCache) {
 /// Returns `None` if the XEX is missing or unparseable (graceful degradation).
 fn extract_definitions(game_root: &Path) -> Option<DefinitionCache> {
     let assets_dir = game_root.join("assets");
-    let xex_path   = assets_dir.join("default.xex");
-
-    if !xex_path.exists() {
-        return None;
-    }
+    let xex_path   = paths::find_case_insensitive(&assets_dir, "default.xex")?;
 
     // Resolve achievement strings against the launcher's configured UI
     // language, so switching language in Settings changes achievement text too.

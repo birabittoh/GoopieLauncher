@@ -229,10 +229,16 @@ fn migrate_builds_layout(game: &str) {
 
 // ── Basic state queries ───────────────────────────────────────────────────────
 
+/// Path to `<games>/<game>/assets/default.xex`, tolerating casing that differs
+/// from the normalized form extraction writes. `None` when it isn't installed.
+pub fn xex_path(game: &str) -> Option<std::path::PathBuf> {
+    crate::paths::find_case_insensitive(&game_root(game).join("assets"), "default.xex")
+}
+
 /// Returns `true` if `<games>/<game>/assets/default.xex` exists. ISO data is
 /// shared across all builds of a game, so this is not build-scoped.
 pub fn is_iso_installed(game: &str) -> bool {
-    game_root(game).join("assets").join("default.xex").exists()
+    xex_path(game).is_some()
 }
 
 /// Returns `true` if the build's executable exists (canonical name or

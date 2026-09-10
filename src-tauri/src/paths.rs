@@ -1,6 +1,25 @@
 //! Cross-platform path helpers, keeping parity with the C++ launcher's defaults.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// Resolve `dir/name` tolerating a differently-cased `name` on disk.
+///
+/// Extraction normalizes casing on write, but games extracted before that and
+/// files copied in by hand can carry any casing — and on Linux/Android the
+/// filesystem won't paper over it the way Windows and macOS do. Returns the
+/// exact-case path when it exists, otherwise the first case-insensitive match,
+/// otherwise `None`.
+pub fn find_case_insensitive(dir: &Path, name: &str) -> Option<PathBuf> {
+    let exact = dir.join(name);
+    if exact.exists() {
+        return Some(exact);
+    }
+    std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .find(|e| e.file_name().to_string_lossy().eq_ignore_ascii_case(name))
+        .map(|e| e.path())
+}
 
 /// Return the path to the config file / directory.
 ///

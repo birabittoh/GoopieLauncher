@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::{config, download, paths};
 
-use super::stfs;
+use super::{stfs, xex};
 
 const XUID: &str = "0000000000000000";
 const CONTENT_TYPE_DLC: &str = "00000002";
@@ -57,7 +57,20 @@ pub struct InstalledDlc {
 /// Returns the matched DLC name from `dlc_names` (if any).
 pub fn install_dlc(game: &str, src_path: &str, dlc_names: &[String]) -> std::io::Result<Option<String>> {
     let meta = stfs::read_header_meta(src_path)?;
-    let title_id = format!("{:08X}", meta.title_id);
+    // Install under the *game's* title id, not the package's. The SDK's
+    // ContentManager::ListContent only ever enumerates the running title's
+    // directory, so a package whose header names a different title id (retail
+    // DLC is sometimes filed under a neighbouring id — Eternal Sonata's ships
+    // as 4E4D07E4 while the game is 4E4D07E2) would land somewhere the game
+    // never looks. For the common case where the two agree this is a no-op.
+    let title_id_u32 = game_title_id(game).unwrap_or(meta.title_id);
+    if title_id_u32 != meta.title_id {
+        eprintln!(
+            "[dlc] Package title id {:08X} differs from {}'s {:08X}; installing under the game's id",
+            meta.title_id, game, title_id_u32
+        );
+    }
+    let title_id = format!("{:08X}", title_id_u32);
     let hash = Path::new(src_path)
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
@@ -98,7 +111,10 @@ pub fn install_dlc(game: &str, src_path: &str, dlc_names: &[String]) -> std::io:
         &hash,
         meta.content_type,
         &meta.display_name_raw,
-        meta.title_id,
+        // Must match the directory above: XCONTENT_AGGREGATE_DATA locates a
+        // package by device_id/title_id/content_type/file_name, so a header
+        // naming a different title id resolves to a path that doesn't exist.
+        title_id_u32,
     )?;
 
     // Match against known DLC names
@@ -183,6 +199,15 @@ pub fn open_dlc_folder(game: &str, title_id: &str, hash: &str) {
 
 fn game_root(game: &str) -> PathBuf {
     PathBuf::from(config::get_games_folder()).join(game)
+}
+
+/// The title id of the installed game, read from its `assets/default.xex`.
+///
+/// `None` when the game isn't extracted yet or the xex carries no Execution
+/// Info header — callers fall back to the package's own title id, which is the
+/// behaviour that predates this lookup.
+fn game_title_id(game: &str) -> Option<u32> {
+    xex::read_title_id(&crate::games::xex_path(game)?)
 }
 
 fn content_base(game: &str) -> std::io::Result<PathBuf> {

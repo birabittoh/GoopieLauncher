@@ -60,7 +60,7 @@ fn resolve_icon_png(game: &str, icon_url: &str) -> Option<Vec<u8>> {
         return None;
     }
 
-    let xex_path = games::game_root(game).join("assets").join("default.xex");
+    let xex_path = games::xex_path(game)?;
     match crate::extract::xex::extract_title_image(&xex_path) {
         Ok(png) => Some(png),
         Err(e) => {
