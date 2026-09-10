@@ -809,7 +809,21 @@ pub fn resolve_launch(
 
     let cwd = exe_path.parent().unwrap_or(&dir).to_path_buf();
     let exe_name = exe_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    Ok(LaunchSpec { program: exe_path, args, cwd, env: Vec::new(), exe_name })
+
+    // The Rex runtime resolves its user folder (saves, headers, shader cache)
+    // from `$XDG_DATA_HOME`, which Flatpak rewrites to the per-app sandbox dir.
+    // Point the game at the host `~/.local/share` instead so it reads and
+    // writes the same saves a native install does — and the same ones
+    // `paths::rex_user_folder` hands the launcher's backup/restore.
+    let mut env: Vec<(String, String)> = Vec::new();
+    #[cfg(not(windows))]
+    if crate::paths::in_flatpak() {
+        if let Some(host) = crate::paths::rex_user_folder() {
+            env.push(("XDG_DATA_HOME".to_string(), host.to_string_lossy().into_owned()));
+        }
+    }
+
+    Ok(LaunchSpec { program: exe_path, args, cwd, env, exe_name })
 }
 
 /// Spawns the game and returns the child process along with its executable

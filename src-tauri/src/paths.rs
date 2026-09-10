@@ -136,12 +136,24 @@ pub fn default_games_folder() -> PathBuf {
 
     #[cfg(not(windows))]
     if in_flatpak() && !xdg_default.exists() {
-        if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
-            return PathBuf::from(home).join(".local").join("share").join("Goopie").join("Games");
+        if let Some(host) = flatpak_host_data_home() {
+            return host.join("Goopie").join("Games");
         }
     }
 
     xdg_default
+}
+
+/// The *unsandboxed* `~/.local/share` as seen from inside a Flatpak.
+///
+/// Flatpak rewrites `$XDG_DATA_HOME` to the per-app `~/.var/app/<id>/data` but
+/// leaves `$HOME` pointing at the real host home, and the manifest holds
+/// `--filesystem=home`, so this resolves to the same directory a native install
+/// would use. Returns `None` only if `$HOME` is unset or empty.
+#[cfg(not(windows))]
+pub(crate) fn flatpak_host_data_home() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").filter(|h| !h.is_empty())?;
+    Some(PathBuf::from(home).join(".local").join("share"))
 }
 
 /// Path to the on-disk cache of the games catalogue (`{ lastUpdated, games }`),
@@ -237,6 +249,16 @@ pub fn rex_user_folder() -> Option<PathBuf> {
     }
     #[cfg(not(windows))]
     {
+        // Under Flatpak, `$XDG_DATA_HOME` points into the per-app sandbox dir,
+        // which is *not* where a native install's saves live. The game process
+        // is launched with `XDG_DATA_HOME` overridden to this same host path
+        // (see `games::resolve_launch`), so the launcher's view of the live
+        // save folder and the runtime's stay in agreement.
+        if in_flatpak() {
+            if let Some(host) = flatpak_host_data_home() {
+                return Some(host);
+            }
+        }
         rex_user_folder_from_env(|key| std::env::var(key).ok())
     }
 }
