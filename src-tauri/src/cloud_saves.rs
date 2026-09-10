@@ -89,6 +89,37 @@ fn error_map() -> &'static Mutex<HashMap<String, String>> {
     LAST_ERROR.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// The last sync that actually *moved data* for a game, so the UI can announce
+/// it. Only recorded when bytes changed hands (an upload or a download that
+/// replaced the live save) — never for the common "hashes already match,
+/// nothing to do" outcome, which is what the poll sees the vast majority of
+/// the time and which nobody wants a notification about.
+#[derive(Debug, Clone)]
+struct SyncEvent {
+    /// Process-wide monotonic id. The frontend polls `status()` and toasts
+    /// whenever this changes, which is race-free without needing push events:
+    /// a missed poll tick just means one combined toast instead of two.
+    seq: u64,
+    /// `"pushed"` (local → Drive) or `"pulled"` (Drive → local).
+    kind: &'static str,
+    at: u64,
+}
+
+fn event_map() -> &'static Mutex<HashMap<String, SyncEvent>> {
+    static LAST_EVENT: OnceLock<Mutex<HashMap<String, SyncEvent>>> = OnceLock::new();
+    LAST_EVENT.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn next_seq() -> u64 {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+fn record_event(game: &str, kind: &'static str) {
+    let event = SyncEvent { seq: next_seq(), kind, at: now_epoch() };
+    event_map().lock().unwrap().insert(game.to_string(), event);
+}
+
 fn mark_syncing(game: &str, syncing: bool) {
     let mut set = syncing_set().lock().unwrap();
     if syncing {
@@ -161,12 +192,20 @@ pub fn set_enabled(game: &str, enabled: bool) {
 pub fn status(game: &str) -> Value {
     let store = load(&paths::cloud_saves_file());
     let g = store.games.get(game).cloned().unwrap_or_default();
+    let last_event = event_map()
+        .lock()
+        .unwrap()
+        .get(game)
+        .map(|e| json!({ "seq": e.seq, "kind": e.kind, "at": e.at }));
     json!({
         "enabled": g.enabled,
         "signedIn": store.refresh_token.is_some(),
         "lastSyncedAt": g.last_synced_at,
         "syncing": is_syncing(game),
         "error": last_error(game),
+        // Null until this launcher session has actually transferred a save for
+        // this game — see `SyncEvent`.
+        "lastEvent": last_event,
     })
 }
 
@@ -261,6 +300,7 @@ fn push(game: &str) -> Result<(), String> {
     let updated_at = now_epoch();
     let file_id = drive::upload(&token, remote.as_ref().map(|r| r.id.as_str()), &name, &zip_bytes, &local_hash, updated_at)?;
     update_synced_metadata(game, Some(local_hash), updated_at, file_id);
+    record_event(game, "pushed");
     Ok(())
 }
 
@@ -313,6 +353,7 @@ fn pull(game: &str) -> Result<(), String> {
     let remote_bytes = drive::download(&token, &remote.id)?;
     if saves::import_save_zip(game, &remote_bytes) {
         update_synced_metadata(game, remote.hash.clone(), remote.updated_at.unwrap_or_else(now_epoch), remote.id.clone());
+        record_event(game, "pulled");
     }
     Ok(())
 }
