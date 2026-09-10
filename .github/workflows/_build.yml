@@ -382,9 +382,22 @@ jobs:
           # PT_INTERP at the bundled loader (via the same stable /tmp token)
           # and give it an RPATH back to $APPDIR/lib, so it no longer depends
           # on how AppRun happens to invoke it.
-          MAIN_BIN="$(find -H squashfs-root/bin -maxdepth 1 -type f -name goopie-launcher | head -1)"
+          #
+          # Since quick-sharun's 2026-09 lib4bin rewrite, bin/goopie-launcher
+          # is no longer the real executable but a hard link to the static
+          # `sharun` wrapper (which patchelf rejects: "no section headers");
+          # the actual binary is deployed to shared/bin/goopie-launcher, with
+          # shared/lib symlinked back to ../lib, so $ORIGIN/../lib still
+          # resolves. Prefer that location and fall back to bin/ for the
+          # older layout.
+          MAIN_BIN="$(find -H squashfs-root/shared/bin squashfs-root/bin -maxdepth 1 -type f -name goopie-launcher 2>/dev/null | head -1)"
           if [ -z "$MAIN_BIN" ]; then
-            echo "::error::Could not find bin/goopie-launcher under squashfs-root; full tree:"
+            echo "::error::Could not find goopie-launcher under squashfs-root/{shared/bin,bin}; full tree:"
+            find -H squashfs-root
+            exit 1
+          fi
+          if ! patchelf --print-interpreter "$MAIN_BIN" >/dev/null 2>&1; then
+            echo "::error::$MAIN_BIN is not a dynamically linked ELF (sharun wrapper?); full tree:"
             find -H squashfs-root
             exit 1
           fi
