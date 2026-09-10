@@ -436,10 +436,13 @@ pub fn uninstall_all(game: &str) {
 /// space an extracted ISO takes up without uninstalling the game itself.
 pub fn remove_assets(game: &str) {
     let dir = game_root(game).join("assets");
-    if !dir.exists() {
+    if !crate::paths::path_or_link_exists(&dir) {
         return;
     }
-    if let Err(e) = std::fs::remove_dir_all(&dir) {
+    // When the assets dir is a symlink to a folder the user picked themselves
+    // (see `extract::link_assets_dir`), only the link is dropped — their files
+    // stay where they are.
+    if let Err(e) = crate::paths::remove_dir_or_link(&dir) {
         eprintln!("[games] Failed to remove assets for {}: {}", game, e);
         return;
     }

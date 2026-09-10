@@ -21,6 +21,74 @@ pub fn find_case_insensitive(dir: &Path, name: &str) -> Option<PathBuf> {
         .map(|e| e.path())
 }
 
+/// Remove a directory, a symlink to a directory, or a plain file at `path`.
+///
+/// `std::fs::remove_dir_all` is not enough on its own: on Unix it refuses to
+/// act on a symlink (`ENOTDIR`), and while on Windows it would happily unlink
+/// the reparse point, we never want to risk recursing into the *target* of a
+/// user-picked assets folder. So symlinks are always unlinked, never followed.
+/// Missing paths are a no-op.
+pub fn remove_dir_or_link(path: &Path) -> std::io::Result<()> {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return Ok(()); // nothing there
+    };
+    if meta.is_symlink() {
+        // On Windows a directory symlink must be removed with `remove_dir`;
+        // on Unix every symlink is unlinked with `remove_file`.
+        #[cfg(windows)]
+        {
+            return std::fs::remove_dir(path).or_else(|_| std::fs::remove_file(path));
+        }
+        #[cfg(not(windows))]
+        {
+            return std::fs::remove_file(path);
+        }
+    }
+    if meta.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    }
+}
+
+/// `true` if something exists at `path`, without following a final symlink.
+///
+/// `Path::exists` resolves the link and so reports `false` for a dangling one,
+/// which would then make `create_dir_all` fail with "file exists".
+pub fn path_or_link_exists(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok()
+}
+
+/// Create a symlink at `link` pointing at the directory `target`.
+///
+/// Windows needs the directory-specific call (and either Developer Mode or the
+/// `SeCreateSymbolicLinkPrivilege`); Unix has a single `symlink`.
+pub fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::symlink_dir(target, link)
+    }
+    #[cfg(not(windows))]
+    {
+        std::os::unix::fs::symlink(target, link)
+    }
+}
+
+/// Recursively copy `src` into `dst`, creating `dst` if needed.
+pub fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let target = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_all(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
 /// Return the path to the config file / directory.
 ///
 /// - Windows: uses registry (see `config.rs`) — this returns a placeholder.

@@ -39,6 +39,112 @@ pub fn install_game(game_name: &str, iso_only: bool, expected_xex_sha: &str, sta
     }
 }
 
+/// Open a native folder dialog, let the user pick an *already extracted* game
+/// folder, and link `<games>/<game_name>/assets/` at it — no copying, so the
+/// user keeps their files wherever they already live.
+pub fn link_assets_folder(game_name: &str, expected_xex_sha: &str, state: Arc<AppState>) {
+    state
+        .is_extracting
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+
+    let result = link_assets_folder_inner(game_name, expected_xex_sha);
+
+    state
+        .is_extracting
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+
+    match result {
+        Some(Ok(())) => eprintln!("[extract] Linked assets folder for {}", game_name),
+        Some(Err(e)) => {
+            eprintln!("[extract] Linking assets folder failed: {}", e);
+            *state.last_extract_error.lock().unwrap() = Some(e.to_string());
+        }
+        None => {}
+    }
+}
+
+/// Returns `Ok(())` on success, `Err` on failure, or `None` if the user
+/// cancelled the folder picker.
+fn link_assets_folder_inner(game_name: &str, expected_xex_sha: &str) -> Option<std::io::Result<()>> {
+    let picked = platform::pick_assets_folder()?;
+    Some(link_assets_dir(game_name, Path::new(&picked), expected_xex_sha))
+}
+
+/// Point `<games>/<game_name>/assets/` at `src`, after checking `src` really
+/// holds an extracted game.
+///
+/// Accepts either the assets directory itself or a game root containing an
+/// `assets/` subdirectory, since both are plausible things to pick.
+pub fn link_assets_dir(game_name: &str, src: &Path, expected_xex_sha: &str) -> std::io::Result<()> {
+    let invalid = |msg: String| std::io::Error::new(std::io::ErrorKind::InvalidInput, msg);
+
+    if !src.is_dir() {
+        return Err(invalid(format!("not a folder: {}", src.display())));
+    }
+
+    // Tolerate the user picking the game root rather than its assets folder.
+    let src = match crate::paths::find_case_insensitive(src, "default.xex") {
+        Some(_) => src.to_path_buf(),
+        None => {
+            let nested = crate::paths::find_case_insensitive(src, "assets")
+                .filter(|p| crate::paths::find_case_insensitive(p, "default.xex").is_some());
+            nested.ok_or_else(|| {
+                invalid(
+                    "That folder doesn't contain a default.xex. Pick the folder holding the extracted game files."
+                        .to_string(),
+                )
+            })?
+        }
+    };
+
+    // Canonicalize so the self-link check below compares real paths, and so the
+    // symlink survives the user's shell-relative or junction-laden input.
+    let src = src.canonicalize().unwrap_or(src);
+
+    if !expected_xex_sha.is_empty() {
+        let xex = crate::paths::find_case_insensitive(&src, "default.xex")
+            .ok_or_else(|| invalid("default.xex disappeared while linking".to_string()))?;
+        let actual = download::sha256_file(&xex.to_string_lossy()).unwrap_or_default();
+        if !actual.eq_ignore_ascii_case(expected_xex_sha) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "This game's files don't match what's expected, likely because it's a different region or version than the one supported. (default.xex checksum mismatch: expected {}…, got {}…)",
+                    &expected_xex_sha[..expected_xex_sha.len().min(12)],
+                    &actual[..actual.len().min(12)],
+                ),
+            ));
+        }
+    }
+
+    let games_folder = config::get_games_folder();
+    let game_root = Path::new(&games_folder).join(game_name);
+    std::fs::create_dir_all(&game_root)?;
+    let dest = game_root.join("assets");
+
+    // Already pointing at (or literally being) the picked folder — nothing to do.
+    // Without this, the remove below would delete the very files we're linking to.
+    if dest.canonicalize().map(|d| d == src).unwrap_or(false) {
+        return Ok(());
+    }
+
+    crate::paths::remove_dir_or_link(&dest)?;
+
+    match crate::paths::symlink_dir(&src, &dest) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // Windows only grants symlink creation under Developer Mode or with
+            // SeCreateSymbolicLinkPrivilege. Rather than fail the install, fall
+            // back to copying the files in.
+            eprintln!("[extract] Symlink failed ({}), copying folder instead", e);
+            crate::paths::copy_dir_all(&src, &dest).map_err(|copy_err| {
+                let _ = crate::paths::remove_dir_or_link(&dest);
+                copy_err
+            })
+        }
+    }
+}
+
 /// Extract a base-game file (ISO or STFS with default.xex) into `<games>/<game_name>/assets/`.
 /// Wipes the existing assets dir, creates it fresh, and cleans up on error.
 ///
@@ -50,10 +156,10 @@ pub fn extract_base_game(game_name: &str, file_path: &str, expected_xex_sha: &st
         .join(game_name)
         .join("assets");
 
-    if dest.exists() {
-        if let Err(e) = std::fs::remove_dir_all(&dest) {
-            eprintln!("[extract] Warning: could not remove existing assets dir: {}", e);
-        }
+    // May be a symlink to a user-picked folder (see `link_assets_dir`) — unlink
+    // it rather than deleting the files it points at.
+    if let Err(e) = crate::paths::remove_dir_or_link(&dest) {
+        eprintln!("[extract] Warning: could not remove existing assets dir: {}", e);
     }
 
     std::fs::create_dir_all(&dest)?;
@@ -95,7 +201,7 @@ pub fn extract_base_game(game_name: &str, file_path: &str, expected_xex_sha: &st
     });
 
     if result.is_err() {
-        let _ = std::fs::remove_dir_all(&dest);
+        let _ = crate::paths::remove_dir_or_link(&dest);
     }
 
     result
@@ -129,9 +235,7 @@ pub fn commit_assets(src: &Path, game_name: &str) -> std::io::Result<()> {
     std::fs::create_dir_all(&game_root)?;
     let dest = game_root.join("assets");
 
-    if dest.exists() {
-        std::fs::remove_dir_all(&dest)?;
-    }
+    crate::paths::remove_dir_or_link(&dest)?;
     std::fs::rename(src, &dest)
 }
 

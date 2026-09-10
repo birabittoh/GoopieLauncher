@@ -196,6 +196,12 @@ pub fn pick_folder(title: &str) -> Option<String> {
         .map(|p| p.to_string_lossy().into_owned())
 }
 
+/// Show a native folder-picker for an already-extracted game assets folder
+/// (the directory that directly contains `default.xex`).
+pub fn pick_assets_folder() -> Option<String> {
+    pick_folder("Select extracted game folder")
+}
+
 /// Show a native file-picker dialog for game images.
 /// When `iso_only` is true, the dialog filters for `.iso` files.
 pub fn pick_game_file(iso_only: bool) -> Option<String> {
