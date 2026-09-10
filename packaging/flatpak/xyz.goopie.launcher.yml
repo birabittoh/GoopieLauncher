@@ -1,6 +1,6 @@
 app-id: xyz.goopie.launcher
 runtime: org.gnome.Platform
-runtime-version: '47'
+runtime-version: '50'
 sdk: org.gnome.Sdk
 command: goopie-launcher
 
