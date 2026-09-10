@@ -108,19 +108,40 @@ pub fn config_file() -> PathBuf {
     base.join("config.ini")
 }
 
+/// Whether we're running inside a Flatpak sandbox.
+///
+/// `FLATPAK_ID` is exported by `flatpak run`; `/.flatpak-info` exists inside
+/// every sandbox even when the environment has been scrubbed.
+pub fn in_flatpak() -> bool {
+    std::env::var_os("FLATPAK_ID").is_some() || Path::new("/.flatpak-info").exists()
+}
+
 /// Default games folder when no override is configured.
 ///
 /// - Windows: `%LOCALAPPDATA%\Goopie\Games`
 /// - Linux/macOS: `~/.local/share/Goopie/Games`
+///
+/// Under Flatpak this deliberately does *not* follow `$XDG_DATA_HOME`: the
+/// sandbox rewrites it to `~/.var/app/xyz.goopie.launcher/data`, so a user
+/// migrating from a native install would find an empty library and have to
+/// repoint the folder by hand. The manifest holds `--filesystem=home`, and
+/// `$HOME` inside the sandbox is still the real host home, so we resolve the
+/// unsandboxed `~/.local/share/Goopie/Games` instead — unless a games folder
+/// already exists at the sandboxed location, which means this install predates
+/// the change and already has games there.
 pub fn default_games_folder() -> PathBuf {
-    directories::BaseDirs::new()
-        .map(|d| {
-            #[cfg(windows)]
-            { d.data_local_dir().join("Goopie").join("Games") }
-            #[cfg(not(windows))]
-            { d.data_local_dir().join("Goopie").join("Games") }
-        })
-        .unwrap_or_else(|| PathBuf::from("Games"))
+    let xdg_default = directories::BaseDirs::new()
+        .map(|d| d.data_local_dir().join("Goopie").join("Games"))
+        .unwrap_or_else(|| PathBuf::from("Games"));
+
+    #[cfg(not(windows))]
+    if in_flatpak() && !xdg_default.exists() {
+        if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
+            return PathBuf::from(home).join(".local").join("share").join("Goopie").join("Games");
+        }
+    }
+
+    xdg_default
 }
 
 /// Path to the on-disk cache of the games catalogue (`{ lastUpdated, games }`),
