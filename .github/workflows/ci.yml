@@ -80,6 +80,17 @@ jobs:
       arch: x86_64
       website-artifact: offline-site
 
+  build-flatpak:
+    needs: [prepare, build-linux]
+    if: needs.prepare.outputs.is-release != 'true'
+    name: Package flatpak/x86_64
+    uses: ./.github/workflows/_flatpak.yml
+    with:
+      version: ${{ needs.prepare.outputs.sha-short }}
+      arch: x86_64
+      binary-artifact: Goopie-Launcher-${{ needs.prepare.outputs.sha-short }}-linux-x86_64-portable
+      bundle-name: Goopie-Launcher-linux-x86_64.flatpak
+
   validate-flatpak:
     needs: prepare
     if: needs.prepare.outputs.is-release != 'true'

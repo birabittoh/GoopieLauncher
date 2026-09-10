@@ -88,9 +88,40 @@ jobs:
       versioned_filename: false
       website-artifact: offline-site
 
+  flatpak:
+    needs: build-linux
+    name: Package flatpak/x86_64
+    uses: ./.github/workflows/_flatpak.yml
+    with:
+      version: ${{ github.ref_name }}
+      arch: x86_64
+      binary-artifact: Goopie-Launcher-${{ github.ref_name }}-linux-x86_64-portable
+      bundle-name: Goopie-Launcher-linux-x86_64.flatpak
+
+  flatpak-arm64:
+    needs: build-linux-arm64
+    name: Package flatpak/aarch64
+    uses: ./.github/workflows/_flatpak.yml
+    with:
+      version: ${{ github.ref_name }}
+      arch: aarch64
+      binary-artifact: Goopie-Launcher-${{ github.ref_name }}-linux-aarch64-portable
+      bundle-name: Goopie-Launcher-linux-aarch64.flatpak
+
+  flatpak-repo:
+    name: Publish Flatpak repo to Pages
+    needs: [flatpak, flatpak-arm64]
+    # A called workflow can't request more than its caller grants, so the
+    # permissions _flatpak-publish.yml needs are declared here too.
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/_flatpak-publish.yml
+
   release:
     name: Create GitHub Release
-    needs: [build-linux, build-linux-arm64, build-windows]
+    needs: [build-linux, build-linux-arm64, build-windows, flatpak-repo]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -110,6 +141,8 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             artifacts/**/*.AppImage
+            artifacts/**/*.flatpak
+            artifacts/**/*.flatpakref
             artifacts/**/*-portable/*
             artifacts/**/*.msi
             artifacts/**/*.exe

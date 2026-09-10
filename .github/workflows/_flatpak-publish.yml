@@ -1,0 +1,112 @@
+name: Flatpak publish
+
+# Turns the per-arch .flatpak bundles from _flatpak.yml into a self-hosted
+# Flatpak remote on GitHub Pages, so users get `flatpak update` without
+# Flathub. The bundles install fine on their own, but never update.
+#
+# Needs Pages enabled with "Source: GitHub Actions" (Settings → Pages).
+
+on:
+  workflow_call:
+    inputs:
+      release-tag:
+        description: >-
+          When set, the bundles and the .flatpakref are also uploaded to this
+          existing GitHub release. Leave empty during a release run, where the
+          release job attaches them instead.
+        required: false
+        type: string
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+      contents: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    env:
+      BASE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
+    steps:
+      - name: Download flatpak bundles
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "*-flatpak"
+          path: bundles/
+
+      - name: Install Flatpak tooling
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y flatpak ostree
+
+      # A fresh repo each release: the remote only ever serves the latest
+      # build. Each deployment replaces the site wholesale, so old objects
+      # don't accumulate.
+      - name: Build ostree repo
+        run: |
+          mkdir -p site/repo
+          ostree init --repo=site/repo --mode=archive-z2
+          for bundle in bundles/*/*.flatpak; do
+            flatpak build-import-bundle --no-update-summary site/repo "$bundle"
+          done
+          flatpak build-update-repo site/repo
+
+      - name: Generate remote descriptors
+        run: |
+          cat > site/xyz.goopie.launcher.flatpakref <<EOF
+          [Flatpak Ref]
+          Name=xyz.goopie.launcher
+          Branch=stable
+          Title=Goopie Launcher
+          Url=$BASE_URL/repo/
+          Homepage=https://goopie.xyz
+          IsRuntime=false
+          RuntimeRepo=https://dl.flathub.org/repo/flathub.flatpakrepo
+          EOF
+          cat > site/goopie.flatpakrepo <<EOF
+          [Flatpak Repo]
+          Title=Goopie
+          Url=$BASE_URL/repo/
+          Homepage=https://goopie.xyz
+          Comment=Goopie Launcher releases
+          EOF
+          cat > site/index.html <<EOF
+          <!doctype html>
+          <meta charset="utf-8">
+          <title>Goopie Launcher — Flatpak</title>
+          <h1>Goopie Launcher (Flatpak)</h1>
+          <p>Install and stay up to date:</p>
+          <pre>flatpak install --user $BASE_URL/xyz.goopie.launcher.flatpakref</pre>
+          <p>Then <code>flatpak update</code> picks up new releases.</p>
+          <p><a href="https://goopie.xyz/downloads">All downloads</a></p>
+          EOF
+          # ostree object directories are named with two hex chars, but keep
+          # Jekyll out of the way regardless.
+          touch site/.nojekyll
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flatpakref
+          path: site/xyz.goopie.launcher.flatpakref
+
+      # Only used when back-filling an already-published release; --clobber so
+      # the run is repeatable.
+      - name: Attach assets to existing release
+        if: inputs.release-tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ inputs.release-tag }}" --clobber \
+            bundles/*/*.flatpak site/xyz.goopie.launcher.flatpakref \
+            --repo "${{ github.repository }}"

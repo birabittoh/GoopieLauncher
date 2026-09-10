@@ -1,0 +1,53 @@
+name: Flatpak (existing release)
+
+# Builds and publishes the Flatpak for a release that already exists, without
+# cutting a new version. The Flatpak only wraps the published Linux binary, so
+# it can be produced after the fact — useful the first time Flatpak support
+# lands, or to re-publish the remote without a release.
+#
+# Run it from Actions → "Flatpak (existing release)" → Run workflow.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to package (e.g. v1.9.0)"
+        required: true
+        type: string
+      attach-to-release:
+        description: "Also upload the bundles to that release"
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  flatpak:
+    name: Package flatpak/x86_64
+    uses: ./.github/workflows/_flatpak.yml
+    with:
+      version: ${{ inputs.tag }}
+      arch: x86_64
+      binary-url: https://github.com/${{ github.repository }}/releases/download/${{ inputs.tag }}/Goopie-Launcher-linux-x86_64
+      bundle-name: Goopie-Launcher-linux-x86_64.flatpak
+
+  flatpak-arm64:
+    name: Package flatpak/aarch64
+    uses: ./.github/workflows/_flatpak.yml
+    with:
+      version: ${{ inputs.tag }}
+      arch: aarch64
+      binary-url: https://github.com/${{ github.repository }}/releases/download/${{ inputs.tag }}/Goopie-Launcher-linux-aarch64
+      bundle-name: Goopie-Launcher-linux-aarch64.flatpak
+
+  publish:
+    name: Publish Flatpak repo to Pages
+    needs: [flatpak, flatpak-arm64]
+    # A called workflow can't request more than its caller grants, so the
+    # permissions _flatpak-publish.yml needs are declared here too.
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/_flatpak-publish.yml
+    with:
+      release-tag: ${{ inputs.attach-to-release && inputs.tag || '' }}

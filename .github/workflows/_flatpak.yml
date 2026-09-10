@@ -1,0 +1,103 @@
+name: Flatpak build
+
+# Packages an already-built Linux binary into a Flatpak bundle.
+#
+# The published manifest pulls the launcher from a GitHub release, which does
+# not exist yet while a release is being built — so the manifest is rewritten
+# on the fly to consume the portable binary artifact from _build.yml (see
+# scripts/flatpak-local-manifest.py).
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Version label used for artifact names"
+        required: true
+        type: string
+      arch:
+        description: "Target architecture: x86_64 or aarch64"
+        required: true
+        type: string
+      binary-artifact:
+        description: "Name of the uploaded portable-binary artifact to package"
+        required: false
+        type: string
+      binary-url:
+        description: >-
+          URL of an already-published portable binary to package instead of a
+          workflow artifact (used when packaging an existing release).
+        required: false
+        type: string
+      bundle-name:
+        description: "File name of the produced .flatpak bundle"
+        required: true
+        type: string
+
+jobs:
+  flatpak:
+    runs-on: ${{ inputs.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Only the Flatpak shared-modules submodule is needed here; the website
+      # submodule is large and already baked into the binary.
+      - name: Fetch shared-modules
+        run: git submodule update --init --depth 1 packaging/flatpak/shared-modules
+
+      # flatpak-builder comes from Flathub rather than apt: the distro package
+      # lags, and an older builder resolves CMake install dirs differently,
+      # which breaks shared-modules' libayatana-appindicator chain (ayatana-ido
+      # installs its .pc outside /app/lib/pkgconfig and libayatana-indicator
+      # then can't find it).
+      - name: Install Flatpak tooling
+        run: |
+          sudo apt-get update -qq
+          # dbus-bin provides dbus-run-session, see the build step below.
+          sudo apt-get install -y flatpak python3-yaml dbus-bin
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user -y flathub org.flatpak.Builder
+
+      - name: Download launcher binary (workflow artifact)
+        if: inputs.binary-artifact != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.binary-artifact }}
+          path: binary
+
+      - name: Download launcher binary (published release)
+        if: inputs.binary-url != ''
+        run: |
+          mkdir -p binary
+          curl -fsSL "${{ inputs.binary-url }}" -o binary/goopie-launcher
+
+      - name: Generate local manifest
+        run: |
+          BIN="$(find binary -type f | head -n1)"
+          chmod +x "$BIN"
+          python3 scripts/flatpak-local-manifest.py \
+            packaging/flatpak/xyz.goopie.launcher.yml "$BIN" local-manifest.yml
+
+      # The builder installs the runtime into its own sandboxed installation
+      # (it can't see the host's), and that install needs a session bus —
+      # without one it dies with "Cannot autolaunch D-Bus without X11 $DISPLAY"
+      # on a headless runner. dbus-run-session provides a throwaway bus.
+      - name: Build Flatpak
+        run: |
+          dbus-run-session -- flatpak run org.flatpak.Builder \
+            --user --install-deps-from=flathub --force-clean \
+            --repo=ostree-repo --default-branch=stable \
+            flatpak-build local-manifest.yml
+
+      # --runtime-repo lets `flatpak install ./bundle.flatpak` pull the GNOME
+      # runtime automatically, so users never have to add a remote by hand.
+      - name: Export bundle
+        run: |
+          flatpak build-bundle \
+            --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
+            --arch=${{ inputs.arch }} \
+            ostree-repo "${{ inputs.bundle-name }}" xyz.goopie.launcher stable
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Goopie-Launcher-${{ inputs.version }}-linux-${{ inputs.arch }}-flatpak
+          path: ${{ inputs.bundle-name }}
