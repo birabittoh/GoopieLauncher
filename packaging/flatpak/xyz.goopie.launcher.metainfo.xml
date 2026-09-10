@@ -31,6 +31,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="1.9.0" date="2026-09-10">
+      <description>
+        <p>Release 1.9.0.</p>
+      </description>
+    </release>
     <release version="1.8.0" date="2026-08-21">
       <description>
         <p>Offline image caching and updater improvements.</p>
