@@ -8,7 +8,11 @@ finish-args:
   - --socket=wayland
   - --socket=fallback-x11
   - --socket=pulseaudio
-  - --device=dri
+  # Games run as children of the launcher, so they inherit this sandbox.
+  # SDL enumerates gamepads from /dev/input/event* and talks to PS4/PS5/Switch
+  # Pro pads over /dev/hidraw* for rumble and battery level; --device=all is
+  # the only permission that covers both (it implies dri).
+  - --device=all
   - --share=ipc
   - --share=network
   - --filesystem=home
