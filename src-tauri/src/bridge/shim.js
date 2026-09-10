@@ -125,6 +125,8 @@
 
   // ── Long-running ops (fire-and-forget; poll for progress) ────────────────────
   window.Install         = function (g, x, s)          { return call('Install', [g, x, s]); };
+  // Picks an already-extracted folder and symlinks it in as the game's assets.
+  window.InstallFolder   = function (g, s)             { return call('InstallFolder', [g, s]); };
   window.Uninstall       = function (g, b)             { return call('Uninstall', [g, b]); };
   window.UninstallAll    = function (g)                { return call('UninstallAll', [g]); };
   window.RemoveAssets    = function (g)                { return call('RemoveAssets', [g]); };

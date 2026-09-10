@@ -682,6 +682,15 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
             std::thread::spawn(move || extract::install_game(&game_name, !is_xbla, &expected_xex_sha, state_clone));
             Value::Null
         }
+        // Same end state as `Install`, but from a folder the user already
+        // extracted: `<games>/<game>/assets` becomes a symlink to it.
+        "InstallFolder" => {
+            let game_name = str_arg(&args, 0);
+            let expected_xex_sha = str_arg(&args, 1);
+            let state_clone = Arc::clone(state);
+            std::thread::spawn(move || extract::link_assets_folder(&game_name, &expected_xex_sha, state_clone));
+            Value::Null
+        }
         "Uninstall" => {
             games::uninstall(&str_arg(&args, 0), &str_arg(&args, 1));
             Value::Null
