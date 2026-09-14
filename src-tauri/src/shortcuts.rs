@@ -10,7 +10,7 @@
 //! options at runtime — nothing is frozen at shortcut-creation time.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use image::GenericImageView;
 
@@ -72,22 +72,74 @@ fn resolve_icon_png(game: &str, icon_url: &str) -> Option<Vec<u8>> {
 
 // ── Common helpers ──────────────────────────────────────────────────────────
 
-/// Path to the running launcher executable.
+/// Flatpak application-id of this launcher (the manifest's `app-id`).
 ///
-/// When running inside an AppImage, `current_exe()` resolves to the binary
-/// extracted into the temporary squashfs mount, not the `.AppImage` file the
-/// user actually has on disk. The AppImage runtime always sets `$APPIMAGE` to
-/// the real file path, so prefer that when available.
-fn launcher_exe() -> Result<PathBuf, String> {
-    if let Ok(appimage) = std::env::var("APPIMAGE") {
-        return Ok(PathBuf::from(appimage));
+/// `FLATPAK_ID` is always exported by `flatpak run`; the fallback matches the
+/// hardcoded `set_prgname` / manifest id and is only needed for tests or
+/// host-side callers that want a predictable value.
+fn flatpak_app_id() -> String {
+    std::env::var_os("FLATPAK_ID")
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "xyz.goopie.launcher".to_string())
+}
+
+/// The first token of [`launcher_command`] — the executable path or command.
+///
+/// Under Flatpak this is the string `"flatpak"`, because `/app/bin/goopie-
+/// launcher` only exists inside the sandbox; from the host, shortcuts must
+/// relaunch via `flatpak run <app-id>` instead.
+fn launcher_exe() -> Result<String, String> {
+    if crate::paths::in_flatpak() {
+        return Ok("flatpak".to_string());
     }
-    std::env::current_exe().map_err(|e| format!("Could not determine launcher path: {}", e))
+    if let Ok(appimage) = std::env::var("APPIMAGE") {
+        return Ok(appimage);
+    }
+    std::env::current_exe()
+        .map(|p| p.to_string_lossy().into_owned())
+        .map_err(|e| format!("Could not determine launcher path: {}", e))
+}
+
+/// Full command (argv) used to relaunch this launcher from a shortcut.
+///
+/// - **Native installs**: just the path to the running binary (AppImage sets
+///   `$APPIMAGE` to the real file because `current_exe()` resolves to the
+///   temporary squashfs mount).
+/// - **Flatpak**: `flatpak run <app-id>`. `current_exe()` would be
+///   `/app/bin/goopie-launcher` inside the sandbox — a host process can't
+///   run that.
+fn launcher_command() -> Result<Vec<String>, String> {
+    if crate::paths::in_flatpak() {
+        return Ok(vec![
+            "flatpak".to_string(),
+            "run".to_string(),
+            flatpak_app_id(),
+        ]);
+    }
+    if let Ok(appimage) = std::env::var("APPIMAGE") {
+        return Ok(vec![appimage]);
+    }
+    std::env::current_exe()
+        .map(|p| vec![p.to_string_lossy().into_owned()])
+        .map_err(|e| format!("Could not determine launcher path: {}", e))
 }
 
 /// Whether the launcher was started with `--local`.
 fn is_local_mode() -> bool {
     std::env::args().any(|a| a == "--local")
+}
+
+/// Quote a single token per the XDG desktop-entry `Exec=` spec: tokens
+/// containing whitespace, `"`, or `\` are wrapped in double-quotes with
+/// backslash escapes; bare tokens are left untouched.
+fn desktop_token(token: &str) -> String {
+    if token.contains(|c: char| c == '"' || c == '\\' || c.is_whitespace()) {
+        let escaped = token.replace('\\', "\\\\").replace('"', "\\\"");
+        format!("\"{}\"", escaped)
+    } else {
+        token.to_string()
+    }
 }
 
 // ── Windows implementation ──────────────────────────────────────────────────
@@ -178,7 +230,7 @@ pub fn exists_applications(_game: &str, title: &str) -> bool {
 
 #[cfg(windows)]
 pub fn create_desktop(game: &str, title: &str, icon_url: &str) -> Result<(), String> {
-    let exe = launcher_exe()?;
+    let exe = PathBuf::from(launcher_exe()?);
     let path = windows_lnk_path(windows_desktop_dir(), title)
         .ok_or_else(|| "Could not determine Desktop directory".to_string())?;
     let icon = windows_icon_path(game, icon_url);
@@ -189,7 +241,7 @@ pub fn create_desktop(game: &str, title: &str, icon_url: &str) -> Result<(), Str
 
 #[cfg(windows)]
 pub fn create_applications(game: &str, title: &str, icon_url: &str) -> Result<(), String> {
-    let exe = launcher_exe()?;
+    let exe = PathBuf::from(launcher_exe()?);
     let path = windows_lnk_path(windows_startmenu_dir(), title)
         .ok_or_else(|| "Could not determine Start Menu directory".to_string())?;
     let icon = windows_icon_path(game, icon_url);
@@ -224,8 +276,11 @@ pub fn remove_applications(_game: &str, title: &str) -> Result<(), String> {
 
 #[cfg(not(windows))]
 fn xdg_desktop_dir() -> PathBuf {
-    // directories::UserDirs reads ~/.config/user-dirs.dirs, which is where
-    // the localized desktop folder name (e.g. "Scrivania") is defined.
+    if crate::paths::in_flatpak() {
+        return flatpak_desktop_dir();
+    }
+    // directories::UserDirs reads $XDG_CONFIG_HOME/user-dirs.dirs, which is
+    // where the localized desktop folder name (e.g. "Scrivania") is defined.
     // $XDG_DESKTOP_DIR is rarely exported as an env var, so don't rely on it.
     directories::UserDirs::new()
         .and_then(|u| u.desktop_dir().map(|p| p.to_path_buf()))
@@ -235,15 +290,57 @@ fn xdg_desktop_dir() -> PathBuf {
         })
 }
 
+/// The user's Desktop folder as seen by the *host*, from inside a Flatpak.
+///
+/// Flatpak rewrites `$XDG_CONFIG_HOME` to `~/.var/app/<id>/config`, so
+/// `directories::UserDirs` would read `user-dirs.dirs` from the sandbox and
+/// find nothing (or a stale copy). `$HOME` is still the real host home (the
+/// manifest holds `--filesystem=home`), so parse the host's
+/// `~/.config/user-dirs.dirs` directly, honouring the same `$HOME/`-relative
+/// and absolute-value rules as `xdg-user-dirs`.
+#[cfg(not(windows))]
+fn flatpak_desktop_dir() -> PathBuf {
+    let home = PathBuf::from(
+        std::env::var_os("HOME").filter(|h| !h.is_empty()).unwrap_or_else(|| ".".into()),
+    );
+    let fallback = home.join("Desktop");
+    let Ok(contents) = std::fs::read_to_string(home.join(".config/user-dirs.dirs")) else {
+        return fallback;
+    };
+    for line in contents.lines() {
+        let Some(rest) = line.trim().strip_prefix("XDG_DESKTOP_DIR=") else {
+            continue;
+        };
+        let value = rest.trim().trim_matches('"');
+        if let Some(suffix) = value.strip_prefix("$HOME/") {
+            if !suffix.is_empty() {
+                return home.join(suffix);
+            }
+        } else if value.starts_with('/') {
+            return PathBuf::from(value);
+        }
+        return fallback;
+    }
+    fallback
+}
+
 #[cfg(not(windows))]
 fn xdg_applications_dir() -> PathBuf {
-    let base = std::env::var("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string()))
-                .join(".local")
-                .join("share")
-        });
+    // Under Flatpak, $XDG_DATA_HOME is rewritten to the per-app sandbox dir
+    // (~/.var/app/<id>/data), which the host application menu doesn't read.
+    // Resolve the unsandboxed host ~/.local/share/applications instead.
+    let base = if crate::paths::in_flatpak() {
+        crate::paths::flatpak_host_data_home()
+            .unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string())).join(".local").join("share"))
+    } else {
+        std::env::var("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string()))
+                    .join(".local")
+                    .join("share")
+            })
+    };
     base.join("applications")
 }
 
@@ -253,17 +350,18 @@ fn desktop_filename(game: &str) -> String {
 }
 
 /// Write a `.desktop` file to `path`, creating parent directories as needed.
+/// `cmd` is the full launch command (e.g. `flatpak run xyz.goopie.launcher`).
 #[cfg(not(windows))]
-fn write_desktop_file(path: &PathBuf, game: &str, title: &str, exe: &PathBuf, icon_path: Option<&PathBuf>) -> Result<(), String> {
-    let exe_str = exe.to_string_lossy();
+fn write_desktop_file(path: &PathBuf, game: &str, title: &str, cmd: &[String], icon_path: Option<&PathBuf>) -> Result<(), String> {
+    let exec = cmd.iter().map(|c| desktop_token(c)).collect::<Vec<_>>().join(" ");
     let mut contents = format!(
         "[Desktop Entry]\n\
          Type=Application\n\
          Name={}\n\
-         Exec=\"{}\" --play {}{}\n\
+         Exec={} --play {}{}\n\
          Categories=Game;\n\
          Terminal=false\n",
-        title, exe_str, game,
+        title, exec, game,
         if is_local_mode() { " --local" } else { "" },
     );
     if let Some(icon) = icon_path {
@@ -307,20 +405,20 @@ pub fn exists_applications(game: &str, _title: &str) -> bool {
 
 #[cfg(not(windows))]
 pub fn create_desktop(game: &str, title: &str, icon_url: &str) -> Result<(), String> {
-    let exe = launcher_exe()?;
+    let cmd = launcher_command()?;
     let icon = linux_icon_path(game, icon_url);
     let path = xdg_desktop_dir().join(desktop_filename(game));
-    write_desktop_file(&path, game, title, &exe, icon.as_ref())?;
+    write_desktop_file(&path, game, title, &cmd, icon.as_ref())?;
     eprintln!("[shortcuts] Created desktop: {}", path.display());
     Ok(())
 }
 
 #[cfg(not(windows))]
 pub fn create_applications(game: &str, title: &str, icon_url: &str) -> Result<(), String> {
-    let exe = launcher_exe()?;
+    let cmd = launcher_command()?;
     let icon = linux_icon_path(game, icon_url);
     let path = xdg_applications_dir().join(desktop_filename(game));
-    write_desktop_file(&path, game, title, &exe, icon.as_ref())?;
+    write_desktop_file(&path, game, title, &cmd, icon.as_ref())?;
     eprintln!("[shortcuts] Created applications: {}", path.display());
     Ok(())
 }
@@ -831,9 +929,8 @@ pub fn exists_steam(game: &str, _title: &str) -> bool {
     let Some(vdf_path) = find_shortcuts_vdf() else {
         return false;
     };
-    let exe = match launcher_exe() {
-        Ok(e) => e.to_string_lossy().into_owned(),
-        Err(_) => return false,
+    let Ok(exe) = launcher_exe() else {
+        return false;
     };
     let shortcuts = read_shortcuts_vdf(&vdf_path);
     shortcuts.values().any(|f| is_goopie_shortcut(f, &exe, game))
@@ -850,11 +947,12 @@ pub fn create_steam(game: &str, title: &str, icon_url: &str, cover_url: &str, he
         .ok_or_else(|| "Could not find Steam shortcuts.vdf. Is Steam installed?".to_string())?;
     let mut shortcuts = read_shortcuts_vdf(&vdf_path);
 
-    let exe = launcher_exe()?;
-    let exe_str = exe.to_string_lossy();
+    let cmd = launcher_command()?;
+    let exe = cmd[0].clone();
+    let run_prefix = cmd[1..].join(" ");
 
     // Skip if it already exists.
-    if shortcuts.values().any(|f| is_goopie_shortcut(f, &exe_str, game)) {
+    if shortcuts.values().any(|f| is_goopie_shortcut(f, &exe, game)) {
         eprintln!("[shortcuts] Steam shortcut already exists for {}", game);
         return Ok(());
     }
@@ -868,26 +966,37 @@ pub fn create_steam(game: &str, title: &str, icon_url: &str, cover_url: &str, he
         })
         .unwrap_or_default();
 
-    let start_dir = exe.parent()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    // Steam's StartDir for a flatpak shortcut can't point at /app/... (that
+    // path only exists inside the sandbox), so leave it empty there.
+    let start_dir = if crate::paths::in_flatpak() {
+        String::new()
+    } else {
+        Path::new(&exe).parent()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
 
-    let args = if is_local_mode() {
+    let play_args = if is_local_mode() {
         format!("--play {} --local", game)
     } else {
         format!("--play {}", game)
     };
+    let launch_options = if run_prefix.is_empty() {
+        play_args
+    } else {
+        format!("{} {}", run_prefix, play_args)
+    };
 
-    let appid = steam_shortcut_appid(title, &format!("\"{}\"", exe_str));
+    let appid = steam_shortcut_appid(title, &format!("\"{}\"", exe));
 
     let mut fields = ShortcutFields::new();
     fields.insert("appid".into(), appid.to_string());
     fields.insert("AppName".into(), title.into());
-    fields.insert("Exe".into(), format!("\"{}\"", exe_str));
+    fields.insert("Exe".into(), format!("\"{}\"", exe));
     fields.insert("StartDir".into(), format!("\"{}\"", start_dir));
     fields.insert("icon".into(), icon_path);
     fields.insert("ShortcutPath".into(), String::new());
-    fields.insert("LaunchOptions".into(), args);
+    fields.insert("LaunchOptions".into(), launch_options);
     fields.insert("IsHidden".into(), "0".into());
     fields.insert("AllowDesktopConfig".into(), "1".into());
     fields.insert("AllowOverlay".into(), "1".into());
@@ -896,7 +1005,10 @@ pub fn create_steam(game: &str, title: &str, icon_url: &str, cover_url: &str, he
     fields.insert("DevkitGameID".into(), String::new());
     fields.insert("DevkitOverrideAppID".into(), String::new());
     fields.insert("LastPlayTime".into(), "0".into());
-    fields.insert("FlatpakAppID".into(), String::new());
+    fields.insert(
+        "FlatpakAppID".into(),
+        if crate::paths::in_flatpak() { flatpak_app_id() } else { String::new() },
+    );
     fields.insert("tags".into(), String::new());
 
     let next_idx = shortcuts.keys()
@@ -922,13 +1034,12 @@ pub fn remove_steam(game: &str, _title: &str) -> Result<(), String> {
     let mut shortcuts = read_shortcuts_vdf(&vdf_path);
 
     let exe = launcher_exe()?;
-    let exe_str = exe.to_string_lossy();
     let grid = grid_dir_from_vdf(&vdf_path);
 
     let mut removed_appids = Vec::new();
     let to_remove: Vec<String> = shortcuts.iter()
         .filter(|(_, f)| {
-            if is_goopie_shortcut(f, &exe_str, game) {
+            if is_goopie_shortcut(f, &exe, game) {
                 if let Some(id) = f.get("appid").and_then(|s| s.parse::<u32>().ok()) {
                     removed_appids.push(id);
                 }
