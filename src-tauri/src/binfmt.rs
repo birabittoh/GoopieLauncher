@@ -46,6 +46,28 @@ pub fn detect_executable(path: &Path) -> ExeInfo {
     detect_from_bytes(data)
 }
 
+/// Whether `path` is a type-2 AppImage.
+///
+/// The AppImageKit runtime patches its `AI\x02` magic into the reserved
+/// `EI_PAD` bytes at offset 8 of the ELF header, so only the first 11 bytes of
+/// the file need to be read. Type-1 AppImages (the pre-squashfs format) and
+/// plain ELF binaries are not detected.
+pub fn detect_appimage(path: &Path) -> bool {
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+
+    let mut buf = [0u8; 11];
+    let Ok(n) = file.read(&mut buf) else { return false };
+
+    appimage_from_header(&buf[..n])
+}
+
+fn appimage_from_header(data: &[u8]) -> bool {
+    data.len() >= 11 && &data[8..11] == b"AI\x02"
+}
+
 /// Pure header-parsing logic, split out from [`detect_executable`] for unit
 /// testing without touching the filesystem.
 fn detect_from_bytes(data: &[u8]) -> ExeInfo {
@@ -236,5 +258,30 @@ mod tests {
     fn empty_file() {
         let info = detect_from_bytes(&[]);
         assert_eq!(info, ExeInfo::default());
+    }
+
+    #[test]
+    fn appimage_type2() {
+        let mut buf = vec![0u8; 64];
+        buf[0..4].copy_from_slice(b"\x7FELF");
+        buf[8..11].copy_from_slice(b"AI\x02");
+        assert!(appimage_from_header(&buf));
+    }
+
+    #[test]
+    fn appimage_type2_truncated_header() {
+        let buf = [0u8; 10];
+        assert!(!appimage_from_header(&buf));
+    }
+
+    #[test]
+    fn plain_elf_not_appimage() {
+        let buf = elf_header(1, 62);
+        assert!(!appimage_from_header(&buf));
+    }
+
+    #[test]
+    fn unknown_format_not_appimage() {
+        assert!(!appimage_from_header(b"not an executable"));
     }
 }

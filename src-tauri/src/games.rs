@@ -818,6 +818,11 @@ pub fn resolve_launch(
     let mut env: Vec<(String, String)> = Vec::new();
     #[cfg(not(windows))]
     if crate::paths::in_flatpak() {
+        // AppImages FUSE-mount themselves at first run, but Flatpak sandboxes
+        // have no FUSE; the type-2 runtime will extract-and-run instead.
+        if crate::binfmt::detect_appimage(&exe_path) {
+            env.push(("APPIMAGE_EXTRACT_AND_RUN".to_string(), "1".to_string()));
+        }
         if let Some(host) = crate::paths::rex_user_folder() {
             env.push(("XDG_DATA_HOME".to_string(), host.to_string_lossy().into_owned()));
         }
