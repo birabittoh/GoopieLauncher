@@ -24,7 +24,11 @@ finish-args:
   - --talk-name=org.ayatana
   - --filesystem=xdg-run/tray-icon:create
   - --filesystem=xdg-run/discord-ipc-0
-  - --env=GOOPIE_DISABLE_UPDATER=1
+  # No GOOPIE_DISABLE_UPDATER here on purpose: the launcher detects the sandbox
+  # on its own (paths::in_flatpak) and refuses to self-update, while the env var
+  # would also suppress the update *check* — which is what left Flatpak users
+  # unaware that a new version existed at all. The check now runs and the UI
+  # points at `flatpak update`.
 
 modules:
   - shared-modules/libayatana-appindicator/libayatana-appindicator-gtk3.json

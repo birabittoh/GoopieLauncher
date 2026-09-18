@@ -90,10 +90,17 @@ jobs:
 
       # --runtime-repo lets `flatpak install ./bundle.flatpak` pull the GNOME
       # runtime automatically, so users never have to add a remote by hand.
+      #
+      # --repo-url records our Pages repo as the bundle's *origin*: without it,
+      # a bundle install has no remote at all, so `flatpak update` (and GNOME
+      # Software / Discover) can never see a new release and the install is
+      # frozen forever. With it, installing the standalone .flatpak behaves
+      # like installing from the .flatpakref.
       - name: Export bundle
         run: |
           flatpak build-bundle \
             --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
+            --repo-url="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/repo/" \
             --arch=${{ inputs.arch }} \
             ostree-repo "${{ inputs.bundle-name }}" xyz.goopie.launcher stable
 

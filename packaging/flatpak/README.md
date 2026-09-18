@@ -11,17 +11,28 @@ Install from the self-hosted remote (recommended — `flatpak update` works):
 flatpak install --user https://birabittoh.github.io/GoopieLauncher/xyz.goopie.launcher.flatpakref
 ```
 
-Or install a standalone bundle from a GitHub release (never auto-updates):
+Or install a standalone bundle from a GitHub release:
 
 ```sh
 flatpak install --user ./Goopie-Launcher-linux-x86_64.flatpak
 ```
 
+Bundles built from v1.9.2 on carry the Pages repo as their origin (the
+`--repo-url` passed to `flatpak build-bundle`), so `flatpak update` works for
+them too. **Bundles from earlier releases have no origin remote at all** and
+are frozen at the version they were installed at — `flatpak update` reports
+nothing to do and GNOME Software / Discover never offer an upgrade. Reinstall
+once from the `.flatpakref` above (or a newer bundle) to get unstuck.
+
 Both pull `org.gnome.Platform` from Flathub if it isn't installed already — that
 is the only thing Flathub is used for. No remote has to be added by hand.
 
-The Flatpak sets `GOOPIE_DISABLE_UPDATER=1`: the sandbox can't replace its own
-binary, so updates come from `flatpak update`.
+The sandbox can't replace its own binary, so updates come from `flatpak update`;
+the launcher detects the sandbox itself and refuses to self-update (no
+`GOOPIE_DISABLE_UPDATER` in the manifest — that would also suppress the update
+*check*). The launcher still *checks* for new releases under Flatpak and lights up the
+usual "update available" prompt — it just shows the `flatpak update` command
+instead of offering to update itself.
 
 ## For maintainers
 
