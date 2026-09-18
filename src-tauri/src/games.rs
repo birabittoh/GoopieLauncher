@@ -708,6 +708,7 @@ pub fn resolve_launch(
     set_data_root: bool,
     mount_update: bool,
     cvar_types: &str,
+    data_root_via_cli: bool,
 ) -> Result<LaunchSpec, String> {
     let dir = build_dir(game, build);
 
@@ -737,9 +738,14 @@ pub fn resolve_launch(
     // except `game_data_root` is delivered through the per-build
     // `<exe_dir>/<game>.toml` config instead (ReXGlue reads that reliably).
     // `game_data_root` is the sole documented exception: most games do not
-    // read it from the TOML, so it stays a CLI arg (and is *also* written to
-    // the TOML below, where it's silently ignored, in case a given build does
-    // read it from there).
+    // read it from the TOML, so it defaults to a CLI arg (and is *also*
+    // written to the TOML below either way, in case a given build does read
+    // it from there). `data_root_via_cli` lets a game opt out of the CLI arg:
+    // some SDK builds re-apply their compiled-in cvar default (e.g. from a
+    // game's own SetupEnvironment) after the command line has already been
+    // parsed but before the TOML is loaded, silently discarding a CLI
+    // override — the TOML-only value still wins there since it's applied
+    // after that point.
     let mut managed: Vec<(String, String)> = vec![("user_language".to_string(), language.to_string())];
 
     if set_data_root {
@@ -783,9 +789,11 @@ pub fn resolve_launch(
     write_cvars_config(&exe_dir.join(format!("{}.toml", game)), &managed, OWNED_KEYS, &types)?;
 
     // Only `game_data_root` stays on the command line — everything else now
-    // lives in the TOML written above.
+    // lives in the TOML written above. It's still written into the TOML too
+    // (see above), so skipping the CLI arg here just leaves the TOML value as
+    // the sole source.
     let mut args: Vec<String> = Vec::new();
-    if set_data_root {
+    if set_data_root && data_root_via_cli {
         args.push(format!(
             "--game_data_root={}",
             game_root(game).join("assets").to_string_lossy()
@@ -835,8 +843,8 @@ pub fn resolve_launch(
 /// file name (e.g. "Game.exe") — the latter lets callers recognize the game
 /// restarting itself under a fresh PID (some titles do this to apply
 /// settings) as distinct from the player actually quitting.
-pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data_root: bool, mount_update: bool, cvar_types: &str) -> Result<(std::process::Child, String), String> {
-    let spec = resolve_launch(game, build, cvar_args, custom_exe, set_data_root, mount_update, cvar_types)?;
+pub fn play(game: &str, build: &str, cvar_args: &str, custom_exe: &str, set_data_root: bool, mount_update: bool, cvar_types: &str, data_root_via_cli: bool) -> Result<(std::process::Child, String), String> {
+    let spec = resolve_launch(game, build, cvar_args, custom_exe, set_data_root, mount_update, cvar_types, data_root_via_cli)?;
     let exe_name = spec.exe_name.clone();
 
     eprintln!(

@@ -248,7 +248,7 @@ impl AppState {
 /// Spawn `game`/`build` and start tracking it as the running game, replacing
 /// (and killing) any previously-running game first — mirrors the "closing the
 /// running game loses unsaved progress" behaviour the frontend warns about.
-fn launch_and_track(state: &Arc<AppState>, game: String, build: String, cvar_args: String, custom_exe: String, set_data_root: bool, mount_update: bool, cvar_types: String, title_id: String) {
+fn launch_and_track(state: &Arc<AppState>, game: String, build: String, cvar_args: String, custom_exe: String, set_data_root: bool, mount_update: bool, cvar_types: String, title_id: String, data_root_via_cli: bool) {
     kill_running_game(state);
     *state.last_launch_error.lock().unwrap() = None;
 
@@ -279,7 +279,7 @@ fn launch_and_track(state: &Arc<AppState>, game: String, build: String, cvar_arg
     let title_id = if title_id.is_empty() { None } else { Some(title_id.as_str()) };
     leaderboards::merge_all_for_launch(&game, title_id);
 
-    let (child, exe_name) = match games::play(&game, &build, &cvar_args, &custom_exe, set_data_root, mount_update, &cvar_types) {
+    let (child, exe_name) = match games::play(&game, &build, &cvar_args, &custom_exe, set_data_root, mount_update, &cvar_types, data_root_via_cli) {
         Ok(result) => result,
         Err(msg) => {
             // Launch never actually started — undo the merge immediately
@@ -952,9 +952,13 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
             // Used to pick the real "Live" leaderboard store file out of any
             // same-looking decoys before merging. Empty when unset/absent.
             let title_id = str_arg(&args, 7);
+            // Optional (9th): whether `game_data_root` is passed as a CLI
+            // flag vs. left solely in the TOML config. Absent/older website
+            // defaults to `true` (the CLI flag), matching prior behavior.
+            let data_root_via_cli = bool_arg(&args, 8, true);
             let state_clone = Arc::clone(state);
             std::thread::spawn(move || {
-                launch_and_track(&state_clone, game, build, cvar_args, custom_exe, set_data_root, mount_update, cvar_types, title_id);
+                launch_and_track(&state_clone, game, build, cvar_args, custom_exe, set_data_root, mount_update, cvar_types, title_id, data_root_via_cli);
             });
             Value::Null
         }

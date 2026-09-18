@@ -136,7 +136,11 @@
   // declared type (Int/Float/Bool/Enum), so the launcher can write it into
   // the game's TOML config with the correct TOML type instead of guessing
   // from the formatted value string. Older launchers simply ignore it.
-  window.Play            = function (g, b, c, e, r, m, t, lb) { return call('Play', [g, b, c, e, r, m, t, lb]); };
+  // `dc` (9th, optional) selects whether `game_data_root` (when `r` is set)
+  // is passed as a `--game_data_root` CLI flag (default true) or left solely
+  // in the TOML config — see "Set game_data_root to assets folder" in Edit
+  // Game. Older launchers ignore it and always use the CLI flag.
+  window.Play            = function (g, b, c, e, r, m, t, lb, dc) { return call('Play', [g, b, c, e, r, m, t, lb, dc]); };
   // Running-game tracking: poll to drive the Play/Close button and the
   // "close the running game to start this one?" confirmation prompt.
   window.isGameRunning   = function ()    { return call('isGameRunning', []); };
