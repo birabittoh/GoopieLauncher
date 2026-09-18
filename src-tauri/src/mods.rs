@@ -91,8 +91,10 @@ struct Manifest {
     #[serde(default, deserialize_with = "de_comma_list")]
     load_after: Vec<String>,
     /// Which platform(s) this code mod's `code/` currently ships a binary
-    /// for (e.g. `"windows-x64,linux-x64"`), written by the mod's own build
-    /// tooling. Meaningless for asset-only mods (no `code`).
+    /// for (e.g. `"win-amd64,linux-amd64"`, or the pre-rename
+    /// `"windows-x64,linux-x64"` for mods built before the SDK's rename),
+    /// written by the mod's own build tooling. Meaningless for asset-only
+    /// mods (no `code`).
     #[serde(default, deserialize_with = "de_comma_list")]
     platform: Vec<String>,
     /// Minimum host application version, e.g. `"1.2.0"` or `">= 1.2.0"` (both
@@ -188,7 +190,7 @@ pub struct ModInfo {
     pub conflicts: Vec<String>,
     pub load_after: Vec<String>,
     /// Platform target(s) this mod's `code/` ships a binary for (e.g.
-    /// `["windows-x64", "linux-x64"]`). Always empty for asset-only mods.
+    /// `["win-amd64", "linux-amd64"]`). Always empty for asset-only mods.
     pub platform: Vec<String>,
     /// `true` when the manifest declares a `code` stem (a native DLL/SO mod).
     pub is_code: bool,
@@ -413,10 +415,29 @@ pub(crate) fn host_arch() -> &'static str {
     }
 }
 
-/// The full platform id this launcher is running on (e.g. `"windows-x64"`,
-/// `"windows-arm64"`), matching the exact id a code mod's `platform` list
-/// entries use — see the `platform` section of `../rexglue-sdk/docs/mod-system.md`.
+/// The full platform id this launcher is running on (e.g. `"win-amd64"`,
+/// `"mac-arm64"`), matching `ModState::HostPlatformId()` and the exact id a
+/// code mod's `platform` list entries use — see the `platform` section of
+/// `../rexglue-sdk/docs/mod-system.md`.
 fn host_platform() -> String {
+    let os = match host_os() {
+        "windows" => "win",
+        "macos" => "mac",
+        other => other, // "android", "linux"
+    };
+    let arch = match host_arch() {
+        "x64" => "amd64",
+        other => other, // "arm64"
+    };
+    format!("{}-{}", os, arch)
+}
+
+/// The pre-rename spelling of [`host_platform`] (e.g. `"windows-x64"`), which
+/// `ModState::LegacyPlatformId()` also still accepts. Mods built before the
+/// rename ship `platform` entries in this spelling, so it has to keep
+/// matching too or every mod built before the SDK's rename would suddenly
+/// read as "no binary for this platform".
+fn host_platform_legacy() -> String {
     format!("{}-{}", host_os(), host_arch())
 }
 
@@ -477,6 +498,7 @@ pub fn validate(game: &str, installed_game_version: &str) -> Validation {
 fn validate_enabled(enabled: &[(String, Manifest)], installed_game_version: &str) -> Validation {
     let index_of = |id: &str| enabled.iter().position(|(mid, _)| mid == id);
     let host = host_platform();
+    let host_legacy = host_platform_legacy();
 
     let mut issues = Vec::new();
 
@@ -494,7 +516,7 @@ fn validate_enabled(enabled: &[(String, Manifest)], installed_game_version: &str
                 issues.push(err_issue(id, format!(
                     "\"{id}\" is a code mod but declares no platform binaries; it can't load. Update or remove it."
                 )));
-            } else if !m.platform.iter().any(|p| *p == host) {
+            } else if !m.platform.iter().any(|p| *p == host || *p == host_legacy) {
                 issues.push(err_issue(id, format!(
                     "\"{id}\" has no binary for this platform (ships: {}). Update, disable, or remove it.",
                     m.platform.join(", ")
@@ -1586,6 +1608,17 @@ mod tests {
         let other_arch_platform = format!("{}-{}", host_os(), wrong_arch);
         let platform = host_platform();
         let enabled = vec![("some_mod".to_string(), manifest(Some("some_mod"), &[], &[], &[], &[&platform, &other_arch_platform]))];
+        let v = validate_enabled(&enabled, "");
+        assert!(v.ok, "issues: {:?}", v.issues);
+    }
+
+    #[test]
+    fn validate_enabled_passes_a_code_mod_shipping_only_the_legacy_spelling() {
+        // Mods built before the SDK's win-amd64/etc. rename still ship the
+        // pre-rename spelling; ModState::LegacyPlatformId() still accepts it
+        // on the SDK side, so validate_enabled has to as well.
+        let legacy = host_platform_legacy();
+        let enabled = vec![("some_mod".to_string(), manifest(Some("some_mod"), &[], &[], &[], &[&legacy]))];
         let v = validate_enabled(&enabled, "");
         assert!(v.ok, "issues: {:?}", v.issues);
     }
