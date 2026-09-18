@@ -603,6 +603,12 @@ fn dispatch(name: &str, args: Vec<serde_json::Value>, state: &Arc<AppState>) -> 
                 "latestVersion": state.latest_version.lock().unwrap().clone(),
                 "current": env!("CARGO_PKG_VERSION"),
                 "checked": state.update_checked.load(Ordering::Relaxed),
+                // How the user actually gets the new version on this install:
+                // "self" (the built-in updater), "flatpak" (`flatpak update`)
+                // or "external" (a packager set GOOPIE_DISABLE_UPDATER).
+                // Absent on launchers older than 1.9.2 — the frontend treats a
+                // missing field as "self".
+                "updateMethod": launcher::update_method(),
             })
         }
 

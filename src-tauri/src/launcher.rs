@@ -35,7 +35,8 @@ fn releases_api_url() -> Option<String> {
     option_env!("GOOPIE_RELEASES_API").map(|s| s.to_string())
 }
 
-/// Whether the in-place self-updater is disabled.
+/// Whether the updater has been turned off by the packager via the
+/// `GOOPIE_DISABLE_UPDATER` env var.
 ///
 /// Unlike `GOOPIE_RELEASES_API`, this is read from the environment at
 /// *runtime* in every build (release included) — there's no redirection risk
@@ -48,13 +49,42 @@ fn releases_api_url() -> Option<String> {
 ///
 /// When set, no periodic update check ever runs (so the "update available"
 /// icon never lights up) and `self_update`/`run_self_update_check` are no-ops.
-pub fn updates_disabled() -> bool {
-    if crate::paths::in_flatpak() {
-        return true;
-    }
+fn updater_disabled_by_env() -> bool {
     match std::env::var("GOOPIE_DISABLE_UPDATER") {
         Ok(v) => !v.is_empty() && v != "0",
         Err(_) => false,
+    }
+}
+
+/// Whether *replacing the binary in place* is impossible or unwanted.
+///
+/// True inside a Flatpak sandbox (the app can't rewrite its own read-only
+/// `/app`) and whenever the packager set `GOOPIE_DISABLE_UPDATER`.
+pub fn self_update_disabled() -> bool {
+    crate::paths::in_flatpak() || updater_disabled_by_env()
+}
+
+/// Whether we should skip *looking* for a newer release at all.
+///
+/// Note this is deliberately narrower than `self_update_disabled`: under
+/// Flatpak we can't self-update, but we still want to know a new version
+/// exists so the UI can point the user at `flatpak update` instead of leaving
+/// them on an old build forever (which is exactly what used to happen). The
+/// `GOOPIE_DISABLE_UPDATER` escape hatch keeps its documented "stay completely
+/// silent" behavior for third-party packagers.
+pub fn checks_disabled() -> bool {
+    updater_disabled_by_env()
+}
+
+/// How a new version reaches the user on this install — reported to the
+/// frontend so the update dialog can show the right call to action.
+pub fn update_method() -> &'static str {
+    if crate::paths::in_flatpak() {
+        "flatpak"
+    } else if updater_disabled_by_env() {
+        "external"
+    } else {
+        "self"
     }
 }
 
@@ -73,7 +103,7 @@ pub fn updates_disabled() -> bool {
 /// in via `SelfUpdateLauncher`. The one exception is the hidden `AutoApplyUpdate`
 /// setting: when enabled, each live check auto-applies via `maybe_auto_apply`.
 pub fn spawn_update_monitor(state: Arc<AppState>) {
-    if updates_disabled() {
+    if checks_disabled() {
         eprintln!("[launcher] updater disabled at build time (GOOPIE_DISABLE_UPDATER); skipping");
         return;
     }
@@ -170,7 +200,7 @@ fn check_for_update(state: &Arc<AppState>) {
 /// `check_for_update`, so it refreshes exactly the same cache the monitor does
 /// (including re-stamping the throttle timestamp on success).
 pub fn recheck_now(state: Arc<AppState>) {
-    if updates_disabled() {
+    if checks_disabled() {
         return;
     }
     state.update_checking.store(true, Ordering::Relaxed);
@@ -207,6 +237,11 @@ fn game_is_running(state: &AppState) -> bool {
 /// no-op (deferred) while a game is running, so the player's session is never
 /// killed mid-game by an unattended update.
 fn maybe_auto_apply(state: &Arc<AppState>) {
+    // Under Flatpak the check still runs (to light up the UI prompt), but
+    // there's nothing to apply — the package manager owns the binary.
+    if self_update_disabled() {
+        return;
+    }
     let flag = config::get_auto_apply_update();
     let available = state.update_available.load(Ordering::Relaxed);
     let game_running = game_is_running(state);
@@ -241,7 +276,7 @@ pub(crate) fn auto_apply_after_game_exit(state: &Arc<AppState>) {
 /// (The `applied` success case exits `0` from inside `apply_update`; the harness
 /// confirms it by the replaced binary on disk, not this code path.)
 pub fn run_self_update_check() -> ! {
-    if updates_disabled() {
+    if self_update_disabled() {
         println!("SELFUPDATE: disabled");
         std::process::exit(11);
     }
@@ -264,8 +299,8 @@ pub fn run_self_update_check() -> ! {
 }
 
 pub fn self_update(state: Arc<AppState>) {
-    if updates_disabled() {
-        eprintln!("[launcher] updater disabled at build time (GOOPIE_DISABLE_UPDATER); refusing to self-update");
+    if self_update_disabled() {
+        eprintln!("[launcher] self-update unavailable on this install ({}); refusing to self-update", update_method());
         return;
     }
     let Some(api_url) = releases_api_url() else {
