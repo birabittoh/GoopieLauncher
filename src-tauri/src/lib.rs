@@ -10,6 +10,7 @@ mod drive;
 mod download;
 mod games;
 mod extract;
+mod flatpak_migrate;
 mod image_cache;
 mod mods;
 mod offline_site;
@@ -295,6 +296,13 @@ pub fn run() {
     if self_update_check_requested() {
         launcher::run_self_update_check();
     }
+
+    // Move anything earlier Flatpak builds wrote into the sandbox back to the
+    // host home, once. Must run before the games folder or any save path is
+    // resolved — including by the `--play` shortcut path below. Renames only,
+    // so it costs milliseconds even for a multi-gigabyte library.
+    #[cfg(not(windows))]
+    flatpak_migrate::run_once();
 
     // Surface a native error dialog if the previous launch's self-update
     // attempt failed (see `apply_update`/`check_previous_update_result`) —

@@ -263,6 +263,24 @@ pub fn set_auto_apply_update(enabled: bool) {
     }
 }
 
+// ── Flatpak user-data migration (one-time) ───────────────────────────────────
+
+/// Whether the one-time move of sandboxed user data back to the host home has
+/// already run for this install — see `flatpak_migrate::run_once`.
+///
+/// Lives in the sandbox's own `config.ini`, so a fresh `flatpak install` starts
+/// unmarked (with nothing to migrate) and an existing one is only ever swept
+/// once. Flatpak-only, hence no registry branch.
+#[cfg(not(windows))]
+pub fn get_flatpak_migration_done() -> bool {
+    ini_read("FlatpakMigrationDone", "0") == "1"
+}
+
+#[cfg(not(windows))]
+pub fn set_flatpak_migration_done(done: bool) {
+    ini_write("FlatpakMigrationDone", if done { "1" } else { "0" });
+}
+
 // ── Discord Rich Presence ────────────────────────────────────────────────────
 
 /// Whether the launcher should report "Browsing games"/"Playing X" to Discord
