@@ -152,9 +152,42 @@ pub fn default_games_folder() -> PathBuf {
 /// would use. Returns `None` only if `$HOME` is unset or empty.
 #[cfg(not(windows))]
 pub(crate) fn flatpak_host_data_home() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME").filter(|h| !h.is_empty())?;
-    Some(PathBuf::from(home).join(".local").join("share"))
+    flatpak_host_path(&[".local", "share"])
 }
+
+/// A host-home-relative path as seen from inside a Flatpak, e.g.
+/// `flatpak_host_path(&[".config"])` → `/home/<user>/.config`.
+///
+/// Same reasoning as [`flatpak_host_data_home`]: `$HOME` is the real host home
+/// and the manifest holds `--filesystem=home`, so these resolve to exactly what
+/// a native install would use. Returns `None` only if `$HOME` is unset or empty.
+#[cfg(not(windows))]
+pub(crate) fn flatpak_host_path(parts: &[&str]) -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").filter(|h| !h.is_empty())?;
+    let mut path = PathBuf::from(home);
+    path.extend(parts);
+    Some(path)
+}
+
+/// The `XDG_*_HOME` overrides to hand a game launched from inside the Flatpak,
+/// pairing each variable with its host-home-relative location.
+///
+/// Flatpak points all of these at `~/.var/app/xyz.goopie.launcher/…`, which is
+/// the right answer for the *launcher's* own state but the wrong one for a game
+/// the launcher merely spawns: settings, caches and controller mappings written
+/// there don't match a native install's, don't survive `flatpak uninstall`, and
+/// leave the same game behaving like a fresh one depending on how the launcher
+/// that started it was packaged.
+///
+/// `XDG_DATA_HOME` is deliberately absent — `games::resolve_launch` sets it from
+/// [`rex_user_folder`], which the launcher's own save backup/restore also reads,
+/// so the two can't drift apart.
+#[cfg(not(windows))]
+pub(crate) const FLATPAK_GUEST_XDG_DIRS: &[(&str, &[&str])] = &[
+    ("XDG_CONFIG_HOME", &[".config"]),
+    ("XDG_CACHE_HOME", &[".cache"]),
+    ("XDG_STATE_HOME", &[".local", "state"]),
+];
 
 /// Path to the on-disk cache of the games catalogue (`{ lastUpdated, games }`),
 /// written by the website (via the bridge) on every successful Firestore fetch

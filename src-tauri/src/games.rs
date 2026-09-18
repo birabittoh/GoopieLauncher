@@ -818,11 +818,13 @@ pub fn resolve_launch(
     let cwd = exe_path.parent().unwrap_or(&dir).to_path_buf();
     let exe_name = exe_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
 
-    // The Rex runtime resolves its user folder (saves, headers, shader cache)
-    // from `$XDG_DATA_HOME`, which Flatpak rewrites to the per-app sandbox dir.
-    // Point the game at the host `~/.local/share` instead so it reads and
-    // writes the same saves a native install does — and the same ones
-    // `paths::rex_user_folder` hands the launcher's backup/restore.
+    // Flatpak rewrites every `XDG_*_HOME` to the per-app sandbox dir. That's
+    // correct for the launcher itself, but a game it spawns is not part of the
+    // launcher's state: point the whole set back at the host home so a title
+    // sees the same saves, settings and caches whether it was started from the
+    // Flatpak, the AppImage or a native install (and so they survive a
+    // `flatpak uninstall`). `$HOME` is already the real host home — see
+    // `paths::flatpak_host_path`.
     let mut env: Vec<(String, String)> = Vec::new();
     #[cfg(not(windows))]
     if crate::paths::in_flatpak() {
@@ -831,8 +833,15 @@ pub fn resolve_launch(
         if crate::binfmt::detect_appimage(&exe_path) {
             env.push(("APPIMAGE_EXTRACT_AND_RUN".to_string(), "1".to_string()));
         }
+        // Saves (`$XDG_DATA_HOME`) go through `rex_user_folder` so the running
+        // game and the launcher's backup/restore agree on one location.
         if let Some(host) = crate::paths::rex_user_folder() {
             env.push(("XDG_DATA_HOME".to_string(), host.to_string_lossy().into_owned()));
+        }
+        for (var, parts) in crate::paths::FLATPAK_GUEST_XDG_DIRS {
+            if let Some(host) = crate::paths::flatpak_host_path(parts) {
+                env.push((var.to_string(), host.to_string_lossy().into_owned()));
+            }
         }
     }
 
@@ -953,10 +962,27 @@ fn resolve_proton_launch(
         proton_args
     );
 
-    let env = vec![
+    let mut env = vec![
         ("STEAM_COMPAT_DATA_PATH".to_string(), compat_data.to_string_lossy().into_owned()),
         ("STEAM_COMPAT_CLIENT_INSTALL_PATH".to_string(), steam_compat_client),
     ];
+
+    // Same XDG redirection as the native path above: Proton and the Windows
+    // build under it look for the Steam installation, shader caches and Wine's
+    // own state through these, and the sandbox copies are neither what a native
+    // install uses nor worth keeping per-launcher-package. Saves are already
+    // pinned by the `--user_data_root` argument above, so they don't depend on
+    // this.
+    if crate::paths::in_flatpak() {
+        if let Some(host) = crate::paths::flatpak_host_data_home() {
+            env.push(("XDG_DATA_HOME".to_string(), host.to_string_lossy().into_owned()));
+        }
+        for (var, parts) in crate::paths::FLATPAK_GUEST_XDG_DIRS {
+            if let Some(host) = crate::paths::flatpak_host_path(parts) {
+                env.push((var.to_string(), host.to_string_lossy().into_owned()));
+            }
+        }
+    }
 
     let exe_name = exe_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
 
