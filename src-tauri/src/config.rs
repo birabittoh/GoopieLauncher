@@ -265,20 +265,23 @@ pub fn set_auto_apply_update(enabled: bool) {
 
 // ── Flatpak user-data migration (one-time) ───────────────────────────────────
 
-/// Whether the one-time move of sandboxed user data back to the host home has
-/// already run for this install — see `flatpak_migrate::run_once`.
+/// Revision of the move of sandboxed user data back to the host home that last
+/// completed for this install — see `flatpak_migrate::run_once`. `0` if none.
+///
+/// A number rather than a flag so a fixed migration can run again on installs
+/// an earlier, broken revision already marked done (the original
+/// `FlatpakMigrationDone=1` key is deliberately no longer read).
 ///
 /// Lives in the sandbox's own `config.ini`, so a fresh `flatpak install` starts
-/// unmarked (with nothing to migrate) and an existing one is only ever swept
-/// once. Flatpak-only, hence no registry branch.
+/// unmarked (with nothing to migrate). Flatpak-only, hence no registry branch.
 #[cfg(not(windows))]
-pub fn get_flatpak_migration_done() -> bool {
-    ini_read("FlatpakMigrationDone", "0") == "1"
+pub fn get_flatpak_migration_version() -> u32 {
+    ini_read("FlatpakMigrationVersion", "0").parse().unwrap_or(0)
 }
 
 #[cfg(not(windows))]
-pub fn set_flatpak_migration_done(done: bool) {
-    ini_write("FlatpakMigrationDone", if done { "1" } else { "0" });
+pub fn set_flatpak_migration_version(version: u32) {
+    ini_write("FlatpakMigrationVersion", &version.to_string());
 }
 
 // ── Discord Rich Presence ────────────────────────────────────────────────────

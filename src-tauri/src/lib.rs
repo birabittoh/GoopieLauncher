@@ -298,9 +298,9 @@ pub fn run() {
     }
 
     // Move anything earlier Flatpak builds wrote into the sandbox back to the
-    // host home, once. Must run before the games folder or any save path is
-    // resolved — including by the `--play` shortcut path below. Renames only,
-    // so it costs milliseconds even for a multi-gigabyte library.
+    // host home, once. Must run before any save path is resolved — including
+    // by the `--play` shortcut path below. Only saves and settings are copied
+    // (the games library stays put), so it stays quick.
     #[cfg(not(windows))]
     flatpak_migrate::run_once();
 
