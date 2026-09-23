@@ -59,7 +59,7 @@ fn find_by_xex_sha<'a>(catalogue: &'a [CatalogueEntry], sha: &str) -> Option<&'a
     }
     catalogue
         .iter()
-        .find(|g| !g.xex_sha256.is_empty() && g.xex_sha256.eq_ignore_ascii_case(sha))
+        .find(|g| super::expected_xex_hashes(&g.xex_sha256).iter().any(|expected| expected.eq_ignore_ascii_case(sha)))
 }
 
 fn find_by_update_checksum<'a>(catalogue: &'a [CatalogueEntry], sha: &str) -> Option<&'a CatalogueEntry> {
@@ -208,7 +208,7 @@ fn process_base_game(
     }
 
     if let Some(game) = find_focused(catalogue, focused) {
-        if game.xex_sha256.is_empty() {
+        if super::expected_xex_hashes(&game.xex_sha256).is_empty() {
             return commit_base_game(temp, path.into(), file_name, game);
         }
         return DropItem {
@@ -359,5 +359,32 @@ fn process_dlc(
             game_title: Some(game.title.clone()),
             message: format!("failed to install DLC: {}", e),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(recomp_name: &str, xex_sha256: &str) -> CatalogueEntry {
+        CatalogueEntry {
+            recomp_name: recomp_name.to_string(),
+            title: recomp_name.to_string(),
+            xex_sha256: xex_sha256.to_string(),
+            update_checksum: String::new(),
+            update_status: String::new(),
+            dlc_names: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn find_by_xex_sha_matches_any_of_several_hashes() {
+        let catalogue = [entry("single", "aaa"), entry("multi", "bbb, CCC"), entry("none", "")];
+
+        assert_eq!(find_by_xex_sha(&catalogue, "aaa").unwrap().recomp_name, "single");
+        assert_eq!(find_by_xex_sha(&catalogue, "bbb").unwrap().recomp_name, "multi");
+        assert_eq!(find_by_xex_sha(&catalogue, "ccc").unwrap().recomp_name, "multi");
+        assert!(find_by_xex_sha(&catalogue, "ddd").is_none());
+        assert!(find_by_xex_sha(&catalogue, "").is_none());
     }
 }

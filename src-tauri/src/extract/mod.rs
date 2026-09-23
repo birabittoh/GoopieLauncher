@@ -101,20 +101,10 @@ pub fn link_assets_dir(game_name: &str, src: &Path, expected_xex_sha: &str) -> s
     // symlink survives the user's shell-relative or junction-laden input.
     let src = src.canonicalize().unwrap_or(src);
 
-    if !expected_xex_sha.is_empty() {
+    if !expected_xex_hashes(expected_xex_sha).is_empty() {
         let xex = crate::paths::find_case_insensitive(&src, "default.xex")
             .ok_or_else(|| invalid("default.xex disappeared while linking".to_string()))?;
-        let actual = download::sha256_file(&xex.to_string_lossy()).unwrap_or_default();
-        if !actual.eq_ignore_ascii_case(expected_xex_sha) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "This game's files don't match what's expected, likely because it's a different region or version than the one supported. (default.xex checksum mismatch: expected {}…, got {}…)",
-                    &expected_xex_sha[..expected_xex_sha.len().min(12)],
-                    &actual[..actual.len().min(12)],
-                ),
-            ));
-        }
+        verify_xex(&xex, expected_xex_sha)?;
     }
 
     let games_folder = config::get_games_folder();
@@ -149,7 +139,8 @@ pub fn link_assets_dir(game_name: &str, src: &Path, expected_xex_sha: &str) -> s
 /// Wipes the existing assets dir, creates it fresh, and cleans up on error.
 ///
 /// When `expected_xex_sha` is non-empty, verifies the extracted `default.xex`'s
-/// SHA-256 against it and rolls back (removes the assets dir) on mismatch.
+/// SHA-256 against it (see [`verify_xex`]) and rolls back (removes the assets
+/// dir) on mismatch.
 pub fn extract_base_game(game_name: &str, file_path: &str, expected_xex_sha: &str) -> std::io::Result<usize> {
     let games_folder = config::get_games_folder();
     let dest = Path::new(&games_folder)
@@ -183,20 +174,7 @@ pub fn extract_base_game(game_name: &str, file_path: &str, expected_xex_sha: &st
     };
 
     let result = result.and_then(|count| {
-        if !expected_xex_sha.is_empty() {
-            let xex_path = dest.join("default.xex");
-            let actual = download::sha256_file(&xex_path.to_string_lossy()).unwrap_or_default();
-            if !actual.eq_ignore_ascii_case(expected_xex_sha) {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!(
-                        "This game's files don't match what's expected, likely because it's a different region or version than the one supported. (default.xex checksum mismatch: expected {}…, got {}…)",
-                        &expected_xex_sha[..expected_xex_sha.len().min(12)],
-                        &actual[..actual.len().min(12)],
-                    ),
-                ));
-            }
-        }
+        verify_xex(&dest.join("default.xex"), expected_xex_sha)?;
         Ok(count)
     });
 
@@ -372,6 +350,36 @@ enum Format {
     Stfs,
 }
 
+/// Splits a game's comma-separated `xex_sha256` field into its hashes, trimmed,
+/// with empty entries dropped.
+pub fn expected_xex_hashes(field: &str) -> Vec<&str> {
+    field.split(',').map(str::trim).filter(|s| !s.is_empty()).collect()
+}
+
+/// Checks `xex`'s SHA-256 against any hash in a game's `xex_sha256` field. A
+/// field with no hashes accepts any file.
+fn verify_xex(xex: &Path, expected_xex_sha: &str) -> std::io::Result<()> {
+    let expected = expected_xex_hashes(expected_xex_sha);
+    if expected.is_empty() {
+        return Ok(());
+    }
+    let actual = download::sha256_file(&xex.to_string_lossy()).unwrap_or_default();
+    if expected.iter().any(|h| h.eq_ignore_ascii_case(&actual)) {
+        return Ok(());
+    }
+    let wanted = match expected.as_slice() {
+        [only] => format!("{}…", &only[..only.len().min(12)]),
+        many => format!("one of {} known revisions", many.len()),
+    };
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!(
+            "This game's files don't match what's expected, likely because it's a different region or version than the one supported. (default.xex checksum mismatch: expected {wanted}, got {}…)",
+            &actual[..actual.len().min(12)],
+        ),
+    ))
+}
+
 fn detect_format(path: &str) -> std::io::Result<Format> {
     let mut f = std::fs::File::open(path)?;
     let mut magic = [0u8; 4];
@@ -380,5 +388,54 @@ fn detect_format(path: &str) -> std::io::Result<Format> {
     match &magic {
         b"LIVE" | b"CON " | b"PIRS" => Ok(Format::Stfs),
         _ => Ok(Format::Xdvdfs),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A well-formed hash that no test file has.
+    const XEX_SHA: &str = "4f4b1c21dcc3a6b4ac7e2c1a4b3c7c4e1f0f7f2ad5b7d8c0a8c1b1ce61b2b2a0";
+
+    fn xex_with_known_hash() -> (tempfile::TempDir, std::path::PathBuf, String) {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("default.xex");
+        std::fs::write(&path, b"xex").unwrap();
+        let sha = download::sha256_file(&path.to_string_lossy()).unwrap();
+        (tmp, path, sha)
+    }
+
+    #[test]
+    fn expected_xex_hashes_splits_trims_and_drops_empties() {
+        assert_eq!(expected_xex_hashes("aa"), vec!["aa"]);
+        assert_eq!(expected_xex_hashes(" aa , bb,,cc "), vec!["aa", "bb", "cc"]);
+        assert!(expected_xex_hashes("").is_empty());
+        assert!(expected_xex_hashes(" , ,").is_empty());
+    }
+
+    #[test]
+    fn verify_xex_accepts_any_listed_hash_case_insensitively() {
+        let (_tmp, path, sha) = xex_with_known_hash();
+        assert!(verify_xex(&path, &sha).is_ok());
+        assert!(verify_xex(&path, &format!("{XEX_SHA}, {}", sha.to_uppercase())).is_ok());
+    }
+
+    #[test]
+    fn verify_xex_accepts_anything_when_no_hash_is_set() {
+        let (_tmp, path, _) = xex_with_known_hash();
+        assert!(verify_xex(&path, "").is_ok());
+        assert!(verify_xex(&path, " , ").is_ok());
+    }
+
+    #[test]
+    fn verify_xex_rejects_a_hash_outside_the_list() {
+        let (_tmp, path, _) = xex_with_known_hash();
+        let single = verify_xex(&path, XEX_SHA).unwrap_err();
+        assert_eq!(single.kind(), std::io::ErrorKind::InvalidData);
+        assert!(single.to_string().contains("expected 4f4b1c21dcc3…"));
+
+        let many = verify_xex(&path, &format!("{XEX_SHA},{XEX_SHA}")).unwrap_err();
+        assert!(many.to_string().contains("expected one of 2 known revisions"));
     }
 }
