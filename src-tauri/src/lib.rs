@@ -405,6 +405,20 @@ pub fn run() {
                 .initialization_script(&init_script)
                 .build()?;
 
+            // WebKitGTK 2.54 (shipped by the GNOME 50 Flatpak runtime) refuses
+            // to display custom-scheme subresources on a page from another
+            // scheme ("Unsafe attempt to load URL goopieimg://... from origin
+            // https://goopie.xyz"), so every cached cover/header/title image
+            // came up blank. wry only registers the scheme as secure; adding
+            // it to the CORS allowlist is what lets <img> and CSS
+            // background-image load it again. Harmless on older WebKitGTK,
+            // which never blocked these loads in the first place.
+            #[cfg(target_os = "linux")]
+            window.with_webview(|webview| {
+                use webkit2gtk::WebViewExt;
+                webview.inner().set_cors_allowlist(&["goopieimg://*/*"]);
+            })?;
+
             // Stash the window handle so bridge commands (setOfflineMode) can
             // .navigate() it to switch between the live site and the offline
             // bundle at runtime, without relaunching the app.

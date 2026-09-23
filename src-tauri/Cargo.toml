@@ -82,6 +82,8 @@ tauri-plugin-single-instance = "2.4.3"
 # Windows .lnk shortcut creation
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = { version = "0.18", features = ["v3_24"] }
+# set_cors_allowlist (webkit_web_view_set_cors_allowlist) needs v2_34
+webkit2gtk = { version = "2.0", features = ["v2_34"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg        = "0.52"
