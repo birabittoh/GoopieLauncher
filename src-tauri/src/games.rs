@@ -576,6 +576,13 @@ pub fn update(
     ) {
         eprintln!("[games] Update download failed: {}", e);
         *state.last_download_error.lock().unwrap() = Some(e.to_string());
+        // Don't leave an empty/partial build dir behind: it shows up on disk as
+        // a bogus build (and as `unknown/` when no tag was given).
+        let _ = std::fs::remove_dir_all(&dir);
+        if let Some(tag_dir) = dir.parent() {
+            // Only succeeds if the tag dir is now empty, so sibling assets survive.
+            let _ = std::fs::remove_dir(tag_dir);
+        }
         state.finish_download();
         return;
     }
